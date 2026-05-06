@@ -1,0 +1,62 @@
+# MCP Central — single docker-compose.yml
+# All configuration via environment variables (copy .env.example → .env)
+
+services:
+  hub:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mcp-central
+    restart: unless-stopped
+    ports:
+      - "${HUB_PORT:-8000}:8000"
+    volumes:
+      # Persistent SQLite database and log files
+      - ./data:/app/data
+      # Deployed MCP server packages
+      - ./servers:/app/servers
+    environment:
+      # ---- Core ----
+      HUB_PORT: "${HUB_PORT:-8000}"
+      DEBUG: "${DEBUG:-false}"
+      SECRET_KEY: "${SECRET_KEY:?SECRET_KEY must be set in .env}"
+      TZ: "${TZ:-Europe/Madrid}"
+
+      # ---- Admin credentials ----
+      ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set in .env}"
+
+      # ---- Paths ----
+      DATA_DIR: /app/data
+      SERVERS_DIR: /app/servers
+      LOGS_DIR: /app/data/logs
+
+      # ---- Network filtering / proxy ----
+      PROXY_PORT: "${PROXY_PORT:-8888}"
+      BLOCKED_IP_RANGES: "${BLOCKED_IP_RANGES:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8,169.254.0.0/16,100.64.0.0/10}"
+      BLOCKED_DOMAINS: "${BLOCKED_DOMAINS:-metadata.google.internal,169.254.169.254}"
+
+      # ---- MCP server process defaults ----
+      SERVER_MAX_MEMORY_MB: "${SERVER_MAX_MEMORY_MB:-512}"
+      SERVER_RESTART_MAX_RETRIES: "${SERVER_RESTART_MAX_RETRIES:-5}"
+      SERVER_RESTART_BACKOFF_SECONDS: "${SERVER_RESTART_BACKOFF_SECONDS:-5}"
+      SERVER_HEALTH_CHECK_INTERVAL: "${SERVER_HEALTH_CHECK_INTERVAL:-30}"
+
+    # Drop all capabilities — we don't need any
+    cap_drop:
+      - ALL
+    # Only add back what's needed for the proxy to bind a local port
+    security_opt:
+      - no-new-privileges:true
+    # Resource limits — adjust based on how many MCP servers you expect to run
+    deploy:
+      resources:
+        limits:
+          memory: "${HUB_MEMORY_LIMIT:-2g}"
+          cpus: "${HUB_CPU_LIMIT:-2.0}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

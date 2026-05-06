@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+.coverage
+htmlcov/
+coverage.xml
+
+# Data (never commit DB or log files)
+data/*
+!data/.gitkeep
+*.db
+*.sqlite
+*.sqlite3
+*.log
+logs/
+
+# MCP server contents (never commit deployed server code)
+servers/*
+!servers/.gitkeep
+
+# Environment files (NEVER commit secrets)
+.env
+.env.*
+!.env.example
+.env.local
+.env.*.local
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.pnpm-store/
+frontend/coverage/
+node_modules/
+pnpm-debug.log*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Local scratch files
+check_db.py
+fix_session.py
+refactor_deletes.py
+panel_img.json

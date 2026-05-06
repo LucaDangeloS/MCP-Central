@@ -1,0 +1,28 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+env.bak/
+venv.bak/
+
+# Project specifics
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+data/
+servers/
+.env
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.pnpm-store/
