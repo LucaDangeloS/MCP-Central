@@ -41,10 +41,16 @@ class McpServer(Base, TimestampMixin):
     env_vars: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     # JSON-encoded list of tool names (un-namespaced) that are disabled for this server
     disabled_tools: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    # JSON-encoded tool declarations from manifest.json, used as fallback discovery metadata
+    manifest_tools: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     # Python version constraint string, e.g. ">=3.10"
     python_version_constraint: Mapped[str] = mapped_column(
         String(32), nullable=False, default=""
     )
+    # Deployment kind: package, single_file, or codebase
+    source_type: Mapped[str] = mapped_column(String(32), nullable=False, default="package")
+    # Codebase-backed servers refresh dependencies on every start.
+    install_on_start: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     # Lifecycle
     auto_start: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
@@ -86,7 +92,10 @@ class ServerCreate(BaseModel):
     entrypoint_module: str = "main"
     env_vars: dict[str, str] = Field(default_factory=dict)
     disabled_tools: list[str] = Field(default_factory=list)
+    manifest_tools: list[dict[str, Any]] = Field(default_factory=list)
     python_version_constraint: str = ""
+    source_type: str = "package"
+    install_on_start: bool = False
     auto_start: bool = True
     restart_on_error: bool = True
     group_id: int | None = None
@@ -97,6 +106,8 @@ class ServerUpdate(BaseModel):
     entrypoint_module: str | None = None
     env_vars: dict[str, str] | None = None
     disabled_tools: list[str] | None = None
+    manifest_tools: list[dict[str, Any]] | None = None
+    install_on_start: bool | None = None
     auto_start: bool | None = None
     restart_on_error: bool | None = None
     group_id: int | None = None
@@ -112,7 +123,10 @@ class ServerRead(BaseModel):
     entrypoint_module: str
     env_vars: dict[str, Any]
     disabled_tools: list[str]
+    manifest_tools: list[dict[str, Any]]
     python_version_constraint: str
+    source_type: str
+    install_on_start: bool
     auto_start: bool
     restart_on_error: bool
     status: str
@@ -136,6 +150,15 @@ class ServerRead(BaseModel):
     @field_validator("disabled_tools", mode="before")
     @classmethod
     def parse_disabled_tools(cls, v: object) -> list[str]:
+        import json
+
+        if isinstance(v, str):
+            return json.loads(v)  # type: ignore[no-any-return]
+        return v  # type: ignore[return-value]
+
+    @field_validator("manifest_tools", mode="before")
+    @classmethod
+    def parse_manifest_tools(cls, v: object) -> list[dict[str, Any]]:
         import json
 
         if isinstance(v, str):

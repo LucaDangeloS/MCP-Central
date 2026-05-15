@@ -8,7 +8,7 @@ from typing import Annotated
 
 import structlog
 from fastapi import Depends, HTTPException, Security, status
-from fastapi.security import APIKeyHeader, APIKeyQuery
+from fastapi.security import APIKeyHeader
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,7 +20,6 @@ logger = structlog.get_logger(__name__)
 _KEY_LENGTH = 32  # bytes → 64 hex chars
 
 _header_scheme = APIKeyHeader(name="Authorization", auto_error=False)
-_query_scheme = APIKeyQuery(name="api_key", auto_error=False)
 
 
 def generate_api_key() -> tuple[str, str, str]:
@@ -41,14 +40,12 @@ def hash_key(plaintext: str) -> str:
 
 async def verify_api_key(
     header_value: Annotated[str | None, Security(_header_scheme)] = None,
-    query_value: Annotated[str | None, Security(_query_scheme)] = None,
     db: AsyncSession = Depends(get_db),
 ) -> ApiKey:
     """Resolve and validate an API key from the request.
 
     Accepts:
     - ``Authorization: Bearer <key>`` header
-    - ``?api_key=<key>`` query param
     """
     raw: str | None = None
 
@@ -57,8 +54,6 @@ async def verify_api_key(
             raw = header_value[7:].strip()
         else:
             raw = header_value.strip()
-    elif query_value:
-        raw = query_value.strip()
 
     if not raw:
         raise HTTPException(
@@ -93,7 +88,7 @@ class ApiKeyAuth:
         self,
         api_key: Annotated[ApiKey, Depends(verify_api_key)],
     ) -> ApiKey:
-        if api_key.group.name != self.group_name:
+        if api_key.group is None or api_key.group.name != self.group_name:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"API key is not authorised for group '{self.group_name}'",

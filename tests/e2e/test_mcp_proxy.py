@@ -149,6 +149,50 @@ class TestMcpHttpEndpoints:
         assert body["result"]["protocolVersion"] == "2025-03-26"
         assert body["result"]["serverInfo"]["name"] == "MCP Central Hub"
 
+    async def test_streamable_http_post_can_return_sse(self, client: AsyncClient) -> None:
+        mock_pm = self._mock_pm_with_tools()
+        with patch("hub.mcp.proxy.get_process_manager", return_value=mock_pm):
+            resp = await client.post(
+                "/mcp",
+                json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+                headers={"Accept": "application/json, text/event-stream"},
+            )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/event-stream")
+        assert "event: message" in resp.text
+        assert '"protocolVersion":"2025-03-26"' in resp.text
+
+    async def test_streamable_http_get_opens_sse(self, client: AsyncClient) -> None:
+        resp = await client.get("/mcp", headers={"Accept": "text/event-stream"})
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/event-stream")
+        assert ": connected" in resp.text
+
+    async def test_streamable_http_get_without_sse_accept_returns_405(
+        self, client: AsyncClient
+    ) -> None:
+        resp = await client.get("/mcp", headers={"Accept": "application/json"})
+        assert resp.status_code == 405
+
+    async def test_notifications_are_accepted_without_response(
+        self,
+        client: AsyncClient,
+    ) -> None:
+        resp = await client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+        )
+        assert resp.status_code == 202
+        assert resp.content == b""
+
+    async def test_cross_origin_mcp_request_is_rejected(self, client: AsyncClient) -> None:
+        resp = await client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
+            headers={"Origin": "https://attacker.example"},
+        )
+        assert resp.status_code == 403
+
     async def test_ping(self, client: AsyncClient) -> None:
         mock_pm = self._mock_pm_with_tools()
         with patch("hub.mcp.proxy.get_process_manager", return_value=mock_pm):
@@ -198,7 +242,7 @@ class TestMcpHttpEndpoints:
 
         with patch("hub.mcp.proxy.get_process_manager", return_value=mock_pm):
             resp = await client.get("/.well-known/mcp-central.json")
-            mcp_resp = await client.get("/mcp")
+            mcp_resp = await client.get("/mcp", headers={"Accept": "text/event-stream"})
 
         assert resp.status_code == 200
         assert mcp_resp.status_code == 200

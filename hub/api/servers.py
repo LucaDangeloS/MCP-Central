@@ -89,7 +89,11 @@ async def create_server(
         path=payload.path,
         entrypoint_module=payload.entrypoint_module,
         env_vars=json.dumps(payload.env_vars),
+        disabled_tools=json.dumps(payload.disabled_tools),
+        manifest_tools=json.dumps(payload.manifest_tools),
         python_version_constraint=payload.python_version_constraint,
+        source_type=payload.source_type,
+        install_on_start=payload.install_on_start,
         auto_start=payload.auto_start,
         restart_on_error=payload.restart_on_error,
         group_id=payload.group_id,
@@ -129,6 +133,10 @@ async def update_server(
         server.env_vars = json.dumps(payload.env_vars)
     if payload.disabled_tools is not None:
         server.disabled_tools = json.dumps(payload.disabled_tools)
+    if payload.manifest_tools is not None:
+        server.manifest_tools = json.dumps(payload.manifest_tools)
+    if payload.install_on_start is not None:
+        server.install_on_start = payload.install_on_start
     if payload.auto_start is not None:
         server.auto_start = payload.auto_start
     if payload.restart_on_error is not None:
@@ -156,7 +164,7 @@ async def list_server_tools(
     pm = get_process_manager()
     if not hasattr(pm, "_mcp_router"):
         return ok([])
-    mcp_router = pm._mcp_router  # type: ignore[attr-defined]
+    mcp_router = pm._mcp_router
     # Return un-namespaced tools so the UI sees original names + descriptions
     tools: list[dict[str, Any]] = mcp_router._tool_registry.get(name, [])
     return ok(tools)
@@ -169,9 +177,11 @@ async def delete_server(
     db: DbDep,
 ) -> None:
     server = await _get_server_or_404(db, name)
-    pm = get_process_manager()
     try:
+        pm = get_process_manager()
         await pm.stop_server(name)
+    except RuntimeError:
+        logger.warning("delete_server_process_manager_unavailable", server_name=name)
     except Exception as exc:
         import traceback
 

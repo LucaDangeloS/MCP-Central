@@ -199,9 +199,25 @@ class ProcessManager:
 
         config = self._make_sandbox_config(server)
 
-        # Ensure venv exists
+        # Ensure venv exists. Codebase-backed servers refresh dependencies on every start
+        # so active development picks up requirements.txt or pyproject.toml changes.
         venv_dir = self._settings.servers_dir / server.path / ".venv"
         server_dir = self._settings.servers_dir / server.path
+        if server.install_on_start and venv_dir.exists():
+            try:
+                import shutil
+
+                await asyncio.to_thread(shutil.rmtree, venv_dir)
+            except Exception as exc:
+                tb = traceback.format_exc()
+                logger.error(
+                    "venv_refresh_failed",
+                    server_name=server_name,
+                    error=str(exc),
+                    traceback=tb,
+                )
+                await self._update_status(server_name, ServerStatus.error, last_error=tb)
+                raise
         if not venv_dir.exists():
             try:
                 await create_server_venv(server_dir, venv_dir)
@@ -237,6 +253,9 @@ class ProcessManager:
             await self._discover_tools(server_name)
         except Exception as exc:
             tb = traceback.format_exc()
+            manifest_tools = self._parse_manifest_tools(server)
+            if manifest_tools:
+                self._get_mcp_router().register_tools(server_name, manifest_tools)
             logger.error(
                 "tool_discovery_failed",
                 server_name=server_name,
@@ -529,6 +548,15 @@ class ProcessManager:
         if not hasattr(self, "_mcp_router"):
             self._mcp_router = McpRouter(self)
         return self._mcp_router
+
+    def _parse_manifest_tools(self, server: McpServer) -> list[dict[str, Any]]:
+        try:
+            parsed = json.loads(server.manifest_tools)
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(parsed, list):
+            return []
+        return [tool for tool in parsed if isinstance(tool, dict) and tool.get("name")]
 
     async def _discover_tools(self, server_name: str) -> None:
         """Initialize a child MCP server and register its tool definitions."""

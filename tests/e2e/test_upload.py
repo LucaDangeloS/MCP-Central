@@ -122,6 +122,122 @@ class TestUploadHappyPath:
 
         cfg.get_settings.cache_clear()
 
+    async def test_upload_persists_manifest_tools(
+        self, client: AsyncClient, auth_headers: dict[str, str], tmp_path
+    ) -> None:
+        import os
+
+        import hub.config as cfg
+
+        os.environ["SERVERS_DIR"] = str(tmp_path)
+        cfg.get_settings.cache_clear()
+
+        data = _make_zip(manifest={
+            "name": "tool-manifest-srv",
+            "version": "1.0.0",
+            "entrypoint": "main.py",
+            "tools": [
+                {
+                    "name": "search",
+                    "description": "Search marketplace listings by keywords.",
+                }
+            ],
+        })
+        resp = await client.post(
+            "/api/v1/upload",
+            files={"file": ("server.zip", data, "application/zip")},
+            headers=auth_headers,
+        )
+
+        assert resp.status_code == 201
+        server = resp.json()["data"]["server"]
+        assert server["manifest_tools"][0]["name"] == "search"
+        assert server["manifest_tools"][0]["inputSchema"] == {"type": "object"}
+
+        cfg.get_settings.cache_clear()
+
+
+class TestCodebaseUpload:
+    async def test_upload_codebase_server(
+        self, client: AsyncClient, auth_headers: dict[str, str], tmp_path
+    ) -> None:
+        import os
+
+        import hub.config as cfg
+
+        os.environ["SERVERS_DIR"] = str(tmp_path)
+        cfg.get_settings.cache_clear()
+
+        data = _make_zip(manifest={
+            "name": "dev-codebase",
+            "version": "1.0.0",
+            "description": "Development server",
+            "entrypoint": "main.py",
+            "tools": [{"name": "search", "description": "Search listings"}],
+        })
+        resp = await client.post(
+            "/api/v1/upload/codebase?auto_start=false",
+            files={"file": ("server.zip", data, "application/zip")},
+            headers=auth_headers,
+        )
+
+        assert resp.status_code == 201
+        body = resp.json()["data"]
+        assert body["server"]["name"] == "dev-codebase"
+        assert body["server"]["source_type"] == "codebase"
+        assert body["server"]["install_on_start"] is True
+        assert body["server"]["auto_start"] is False
+        assert body["server"]["manifest_tools"][0]["name"] == "search"
+        assert (tmp_path / "dev-codebase" / "main.py").exists()
+
+        cfg.get_settings.cache_clear()
+
+    async def test_codebase_reupload_refreshes_stopped_server(
+        self, client: AsyncClient, auth_headers: dict[str, str], tmp_path
+    ) -> None:
+        import os
+
+        import hub.config as cfg
+
+        os.environ["SERVERS_DIR"] = str(tmp_path)
+        cfg.get_settings.cache_clear()
+
+        first = _make_zip(manifest={
+            "name": "refresh-codebase",
+            "version": "1.0.0",
+            "entrypoint": "main.py",
+        })
+        second = _make_zip(
+            manifest={
+                "name": "refresh-codebase",
+                "version": "1.1.0",
+                "entrypoint": "main.py",
+                "tools": [{"name": "link", "description": "Return links"}],
+            },
+            extra_files={"extra.py": "VALUE = 1\n"},
+        )
+
+        create = await client.post(
+            "/api/v1/upload/codebase?auto_start=false",
+            files={"file": ("server.zip", first, "application/zip")},
+            headers=auth_headers,
+        )
+        assert create.status_code == 201
+
+        refresh = await client.post(
+            "/api/v1/upload/codebase?auto_start=false",
+            files={"file": ("server.zip", second, "application/zip")},
+            headers=auth_headers,
+        )
+
+        assert refresh.status_code == 201
+        body = refresh.json()["data"]
+        assert "refreshed" in body["message"]
+        assert body["server"]["manifest_tools"][0]["name"] == "link"
+        assert (tmp_path / "refresh-codebase" / "extra.py").exists()
+
+        cfg.get_settings.cache_clear()
+
 
 class TestSingleFileServerCreation:
     async def test_create_single_file_server(

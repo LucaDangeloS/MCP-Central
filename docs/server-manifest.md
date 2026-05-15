@@ -1,6 +1,7 @@
 # MCP Server ZIP Package Format
 
 This document specifies the format for deploying an MCP server to MCP Central via ZIP upload.
+The same manifest format is used by normal package uploads and codebase-backed uploads.
 
 ---
 
@@ -53,7 +54,21 @@ server.zip
     }
   },
   "capabilities": ["tools", "resources"],
-  "tags": ["search", "data"]
+  "tags": ["search", "data"],
+  "tools": [
+    {
+      "name": "search",
+      "description": "Search marketplace listings by keywords. Supports optional 'pages' (default 5) and 'include_descriptions' (default true) parameters."
+    },
+    {
+      "name": "link",
+      "description": "Return Marketplace URLs for the given item ids"
+    },
+    {
+      "name": "description",
+      "description": "Return descriptions for the given item ids"
+    }
+  ]
 }
 ```
 
@@ -70,6 +85,29 @@ server.zip
 | `env` | object | NO | Environment variables the server needs. The hub seeds one editable field per key in the server's UI form on upload; operators fill values in there. Values are stored per-server on `McpServer.env_vars` and injected into the subprocess at start/restart. **Note:** values are currently persisted in cleartext in SQLite (see AGENTS.md §13 KI-1). |
 | `capabilities` | array | NO | Informational: `"tools"`, `"resources"`, `"prompts"` |
 | `tags` | array | NO | Freeform tags for UI filtering |
+| `tools` | array | NO | Optional manual tool declarations. Each item must include `name` and may include `description` and `inputSchema`. These are stored with the server and used as fallback discovery metadata for clients such as opencode. |
+
+---
+
+## Deployment Modes
+
+### Package upload
+
+`POST /api/v1/upload` creates an immutable managed package under `servers/<name>/`.
+Dependencies are installed the first time the server starts, when its venv is created.
+
+### Codebase upload
+
+`POST /api/v1/upload/codebase` creates or refreshes a development-oriented server under
+`servers/<name>/`. It accepts the same ZIP structure and `manifest.json` schema, but has two
+important differences:
+
+- Re-uploading a ZIP with the same manifest `name` refreshes the stopped codebase server in place.
+- The hub recreates the server venv on every start, so changes to `requirements.txt` or
+  `pyproject.toml` are applied without manually deleting `.venv`.
+
+This mode is intended for MCP servers under active development or servers that require frequent
+maintenance. Stop the server before refreshing its codebase.
 
 ---
 
