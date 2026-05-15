@@ -238,7 +238,7 @@ export default function Logs() {
       {/* ── Log rows ─────────────────────────────────────────────────────── */}
       <div
         ref={scrollRef}
-        className="flex-1 overflow-y-auto overscroll-contain"
+        className="app-scrollbar flex-1 overflow-y-auto overscroll-contain"
       >
         {logs.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-3">
