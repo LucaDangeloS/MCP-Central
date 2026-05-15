@@ -29,7 +29,10 @@ export interface Server {
   entrypoint_module: string
   env_vars: Record<string, string>
   disabled_tools: string[]
+  manifest_tools: McpTool[]
   python_version_constraint: string
+  source_type: 'package' | 'single_file' | 'codebase'
+  install_on_start: boolean
   auto_start: boolean
   restart_on_error: boolean
   status: 'stopped' | 'starting' | 'running' | 'error' | 'restarting'
@@ -271,6 +274,26 @@ export const uploadApi = {
     const form = new FormData()
     form.append('file', file)
     const res = await fetch(`${BASE}/upload`, {
+      method: 'POST',
+      headers: _token ? { Authorization: `Bearer ${_token}` } : {},
+      body: form,
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ detail: res.statusText }))
+      throw new Error(typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail ?? body))
+    }
+    return res.json()
+  },
+  uploadCodebase: async (
+    file: File,
+    options?: { auto_start?: boolean; replace_existing?: boolean },
+  ): Promise<ApiResponse<{ server: Server; manifest: Record<string, unknown>; message: string }>> => {
+    const form = new FormData()
+    form.append('file', file)
+    const q = new URLSearchParams()
+    if (options?.auto_start !== undefined) q.set('auto_start', String(options.auto_start))
+    if (options?.replace_existing !== undefined) q.set('replace_existing', String(options.replace_existing))
+    const res = await fetch(`${BASE}/upload/codebase${q.toString() ? `?${q}` : ''}`, {
       method: 'POST',
       headers: _token ? { Authorization: `Bearer ${_token}` } : {},
       body: form,
