@@ -88,6 +88,9 @@ async def create_server(
         description=payload.description,
         path=payload.path,
         entrypoint_module=payload.entrypoint_module,
+        language=payload.language.value,
+        launch_command=payload.launch_command,
+        launch_args=json.dumps(payload.launch_args),
         env_vars=json.dumps(payload.env_vars),
         disabled_tools=json.dumps(payload.disabled_tools),
         manifest_tools=json.dumps(payload.manifest_tools),
@@ -129,6 +132,12 @@ async def update_server(
         server.description = payload.description
     if payload.entrypoint_module is not None:
         server.entrypoint_module = payload.entrypoint_module
+    if payload.language is not None:
+        server.language = payload.language.value
+    if payload.launch_command is not None:
+        server.launch_command = payload.launch_command
+    if payload.launch_args is not None:
+        server.launch_args = json.dumps(payload.launch_args)
     if payload.env_vars is not None:
         server.env_vars = json.dumps(payload.env_vars)
     if payload.disabled_tools is not None:

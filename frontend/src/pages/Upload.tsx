@@ -96,7 +96,7 @@ export default function Upload() {
       <div>
         <h1 className="text-xl font-bold text-zinc-900 dark:text-zinc-100">Deploy</h1>
         <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-0.5">
-          Upload a ZIP package or create a single-file MCP server in the editor
+          Upload Python, JavaScript, or TypeScript MCP packages, or create a single-file Python server
         </p>
       </div>
 
@@ -314,10 +314,19 @@ export default function Upload() {
           <p>Your ZIP must contain the following files at the root:</p>
           <pre className="text-xs font-mono bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-md p-3 text-zinc-700 dark:text-zinc-300 leading-6">
 {`server.zip
-├── manifest.json     ← required
-├── requirements.txt  ← required
-└── main.py           ← your entrypoint`}
+|-- manifest.json     required
+|-- requirements.txt  Python dependencies, or pyproject.toml
+|-- package.json      JS/TS dependencies
++-- main.py           or index.js / src/index.ts entrypoint`}
           </pre>
+          <p>
+            Language is detected automatically from{' '}
+            <code className="text-blue-600 dark:text-blue-400 text-xs">manifest.language</code>,
+            the entrypoint extension, or{' '}
+            <code className="text-blue-600 dark:text-blue-400 text-xs">package.json</code>.
+            Python packages use requirements metadata; JavaScript and TypeScript packages use
+            package metadata and run through Node/npm/npx.
+          </p>
           <p>
             Minimal{' '}
             <code className="text-blue-600 dark:text-blue-400 text-xs">manifest.json</code>:
@@ -328,6 +337,14 @@ export default function Upload() {
   "version": "1.0.0",
   "entrypoint": "main.py",
   "module": "main"
+}`}
+          </pre>
+          <p>Minimal JavaScript package manifest:</p>
+          <pre className="text-xs font-mono bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-md p-3 text-zinc-700 dark:text-zinc-300 leading-6">
+{`{
+  "name": "my-node-server",
+  "version": "1.0.0",
+  "entrypoint": "index.js"
 }`}
           </pre>
           <p>

@@ -21,7 +21,7 @@ from hub.api.responses import ok
 from hub.auth.admin import get_current_admin
 from hub.config import get_settings
 from hub.database import get_db
-from hub.models.server import McpServer, ServerRead, ServerStatus
+from hub.models.server import McpServer, ServerLanguage, ServerRead, ServerStatus
 
 logger = structlog.get_logger(__name__)
 _DEPLOY_TASKS: set[asyncio.Task[None]] = set()
@@ -38,8 +38,10 @@ _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 REQUIRED_MANIFEST_FIELDS = {"name", "version", "entrypoint"}
 ALLOWED_MANIFEST_FIELDS = {
     "name", "version", "description", "entrypoint", "module",
-    "python_version", "env", "capabilities", "tags", "tools",
+    "python_version", "node_version", "language", "command", "args",
+    "env", "capabilities", "tags", "tools",
 }
+ALLOWED_LAUNCH_COMMANDS = {"node", "npm", "npx"}
 
 
 class SingleFileServerCreate(BaseModel):
@@ -73,6 +75,18 @@ def _validate_manifest(manifest: dict[str, Any]) -> list[str]:
             f"Server name '{name}' is invalid. "
             f"Must match /^[a-z0-9][a-z0-9_-]{{1,62}}[a-z0-9]$/"
         )
+
+    language = manifest.get("language")
+    if language is not None and language not in {item.value for item in ServerLanguage}:
+        errors.append("manifest.json field 'language' must be python, javascript, or typescript")
+
+    command = manifest.get("command")
+    if command is not None:
+        if command not in ALLOWED_LAUNCH_COMMANDS:
+            errors.append("manifest.json field 'command' must be one of: node, npm, npx")
+        args = manifest.get("args", [])
+        if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
+            errors.append("manifest.json field 'args' must be an array of strings")
 
     tools = manifest.get("tools", [])
     if tools is not None and not isinstance(tools, list):
@@ -121,6 +135,68 @@ def _env_defaults_from_manifest(manifest: dict[str, Any]) -> dict[str, str]:
     if not isinstance(env_spec, dict):
         return {}
     return dict.fromkeys(env_spec, "")
+
+
+def _detect_language(manifest: dict[str, Any], names_in_zip: list[str]) -> ServerLanguage:
+    explicit = manifest.get("language")
+    if explicit in {item.value for item in ServerLanguage}:
+        return ServerLanguage(explicit)
+
+    entrypoint = str(manifest.get("entrypoint", ""))
+    suffix = Path(entrypoint).suffix.lower()
+    if suffix in {".js", ".mjs", ".cjs"}:
+        return ServerLanguage.javascript
+    if suffix in {".ts", ".mts", ".cts"}:
+        return ServerLanguage.typescript
+    if "package.json" in names_in_zip:
+        return ServerLanguage.javascript
+    return ServerLanguage.python
+
+
+def _entrypoint_module(manifest: dict[str, Any], language: ServerLanguage) -> str:
+    entrypoint = str(manifest["entrypoint"])
+    if language == ServerLanguage.python:
+        return str(manifest.get("module", entrypoint.removesuffix(".py").replace("/", ".")))
+    return entrypoint
+
+
+def _launch_command(manifest: dict[str, Any]) -> tuple[str, list[str]]:
+    command = manifest.get("command", "")
+    args = manifest.get("args", [])
+    if not isinstance(command, str) or not command:
+        return "", []
+    if not isinstance(args, list):
+        return command, []
+    return command, [str(arg) for arg in args]
+
+
+def _validate_dependency_metadata(
+    names_in_zip: list[str],
+    language: ServerLanguage,
+    entrypoint_file: str,
+    has_custom_command: bool,
+) -> str | None:
+    if language == ServerLanguage.python:
+        if "requirements.txt" not in names_in_zip and "pyproject.toml" not in names_in_zip:
+            return "requirements.txt or pyproject.toml is missing from the ZIP root."
+        return None
+
+    if not _has_node_package_metadata(names_in_zip, entrypoint_file) and not has_custom_command:
+        return (
+            "package.json is missing from the ZIP root or the JavaScript/TypeScript "
+            "entrypoint directory."
+        )
+    return None
+
+
+def _has_node_package_metadata(names_in_zip: list[str], entrypoint_file: str) -> bool:
+    if "package.json" in names_in_zip:
+        return True
+    entrypoint_parent = Path(entrypoint_file).parent
+    if str(entrypoint_parent) == ".":
+        return False
+    package_json = entrypoint_parent / "package.json"
+    return package_json.as_posix() in names_in_zip
 
 
 def _check_zip_slip(zip_ref: zipfile.ZipFile, target_dir: Path) -> list[str]:
@@ -242,7 +318,9 @@ async def upload_server(
 
     server_name: str = manifest["name"]
     entrypoint_file: str = manifest["entrypoint"]
-    module_name: str = manifest.get("module", entrypoint_file.removesuffix(".py").replace("/", "."))
+    language = _detect_language(manifest, names_in_zip)
+    module_name = _entrypoint_module(manifest, language)
+    launch_command, launch_args = _launch_command(manifest)
     description: str = manifest.get("description", "")
     manifest_tools = _manifest_tools(manifest)
 
@@ -257,10 +335,16 @@ async def upload_server(
             ),
         )
 
-    if "requirements.txt" not in names_in_zip and "pyproject.toml" not in names_in_zip:
+    metadata_error = _validate_dependency_metadata(
+        names_in_zip,
+        language,
+        entrypoint_file,
+        bool(launch_command),
+    )
+    if metadata_error is not None:
         raise HTTPException(
             status_code=422,
-            detail="requirements.txt or pyproject.toml is missing from the ZIP root.",
+            detail=metadata_error,
         )
 
     # ------------------------------------------------------------------ #
@@ -298,9 +382,14 @@ async def upload_server(
     # ------------------------------------------------------------------ #
     # Step 6 — extract to servers_dir/<name>/                              #
     # ------------------------------------------------------------------ #
-    target_dir.mkdir(parents=True, exist_ok=True)
-    zip_ref.extractall(target_dir)
-    zip_ref.close()
+    try:
+        await asyncio.to_thread(target_dir.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread(zip_ref.extractall, target_dir)
+    except Exception:
+        await asyncio.to_thread(shutil.rmtree, target_dir, True)
+        raise
+    finally:
+        zip_ref.close()
     logger.info("server_zip_extracted", server_name=server_name, target=str(target_dir))
 
     # ------------------------------------------------------------------ #
@@ -314,6 +403,9 @@ async def upload_server(
         description=description,
         path=server_name,
         entrypoint_module=module_name,
+        language=language.value,
+        launch_command=launch_command,
+        launch_args=json.dumps(launch_args),
         env_vars=json.dumps(env_vars),
         manifest_tools=json.dumps(manifest_tools),
         python_version_constraint=manifest.get("python_version", ""),
@@ -395,7 +487,9 @@ async def upload_codebase_server(
 
     server_name: str = manifest["name"]
     entrypoint_file: str = manifest["entrypoint"]
-    module_name: str = manifest.get("module", entrypoint_file.removesuffix(".py").replace("/", "."))
+    language = _detect_language(manifest, names_in_zip)
+    module_name = _entrypoint_module(manifest, language)
+    launch_command, launch_args = _launch_command(manifest)
     description: str = manifest.get("description", "")
     manifest_tools = _manifest_tools(manifest)
     target_dir = settings.servers_dir / server_name
@@ -409,10 +503,16 @@ async def upload_codebase_server(
             ),
         )
 
-    if "requirements.txt" not in names_in_zip and "pyproject.toml" not in names_in_zip:
+    metadata_error = _validate_dependency_metadata(
+        names_in_zip,
+        language,
+        entrypoint_file,
+        bool(launch_command),
+    )
+    if metadata_error is not None:
         raise HTTPException(
             status_code=422,
-            detail="requirements.txt or pyproject.toml is missing from the ZIP root.",
+            detail=metadata_error,
         )
 
     dangerous = _check_zip_slip(zip_ref, target_dir)
@@ -473,6 +573,9 @@ async def upload_codebase_server(
             description=description,
             path=server_name,
             entrypoint_module=module_name,
+            language=language.value,
+            launch_command=launch_command,
+            launch_args=json.dumps(launch_args),
             env_vars=json.dumps(env_defaults),
             manifest_tools=json.dumps(manifest_tools),
             python_version_constraint=manifest.get("python_version", ""),
@@ -491,6 +594,9 @@ async def upload_codebase_server(
         server.description = description
         server.path = server_name
         server.entrypoint_module = module_name
+        server.language = language.value
+        server.launch_command = launch_command
+        server.launch_args = json.dumps(launch_args)
         server.env_vars = json.dumps(merged_env)
         server.manifest_tools = json.dumps(manifest_tools)
         server.python_version_constraint = manifest.get("python_version", "")
@@ -574,6 +680,9 @@ async def create_single_file_server(
         description=payload.description,
         path=server_name,
         entrypoint_module="main",
+        language=ServerLanguage.python.value,
+        launch_command="",
+        launch_args="[]",
         env_vars=json.dumps(payload.env_vars),
         manifest_tools="[]",
         python_version_constraint="",

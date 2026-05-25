@@ -24,6 +24,12 @@ class ServerStatus(enum.StrEnum):
     restarting = "restarting"
 
 
+class ServerLanguage(enum.StrEnum):
+    python = "python"
+    javascript = "javascript"
+    typescript = "typescript"
+
+
 class McpServer(Base, TimestampMixin):
     """A registered MCP server managed by this hub."""
 
@@ -37,6 +43,13 @@ class McpServer(Base, TimestampMixin):
     path: Mapped[str] = mapped_column(String(256), nullable=False)
     # Python module entrypoint, e.g. "main" or "mypackage.server"
     entrypoint_module: Mapped[str] = mapped_column(String(256), nullable=False, default="main")
+    # Runtime language detected from the package manifest / files.
+    language: Mapped[str] = mapped_column(
+        String(32), nullable=False, default=ServerLanguage.python.value
+    )
+    # Optional explicit argv command and JSON-encoded args for JS/TS/npm/npx launchers.
+    launch_command: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    launch_args: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     # JSON-encoded env vars to inject (non-secret metadata only; secrets come from .env)
     env_vars: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     # JSON-encoded list of tool names (un-namespaced) that are disabled for this server
@@ -90,6 +103,9 @@ class ServerCreate(BaseModel):
     description: str = Field(default="", max_length=500)
     path: str
     entrypoint_module: str = "main"
+    language: ServerLanguage = ServerLanguage.python
+    launch_command: str = ""
+    launch_args: list[str] = Field(default_factory=list)
     env_vars: dict[str, str] = Field(default_factory=dict)
     disabled_tools: list[str] = Field(default_factory=list)
     manifest_tools: list[dict[str, Any]] = Field(default_factory=list)
@@ -104,6 +120,9 @@ class ServerCreate(BaseModel):
 class ServerUpdate(BaseModel):
     description: str | None = Field(default=None, max_length=500)
     entrypoint_module: str | None = None
+    language: ServerLanguage | None = None
+    launch_command: str | None = None
+    launch_args: list[str] | None = None
     env_vars: dict[str, str] | None = None
     disabled_tools: list[str] | None = None
     manifest_tools: list[dict[str, Any]] | None = None
@@ -121,6 +140,9 @@ class ServerRead(BaseModel):
     description: str
     path: str
     entrypoint_module: str
+    language: str
+    launch_command: str
+    launch_args: list[str]
     env_vars: dict[str, Any]
     disabled_tools: list[str]
     manifest_tools: list[dict[str, Any]]
@@ -141,6 +163,15 @@ class ServerRead(BaseModel):
     @field_validator("env_vars", mode="before")
     @classmethod
     def parse_env_vars(cls, v: object) -> dict[str, Any]:
+        import json
+
+        if isinstance(v, str):
+            return json.loads(v)  # type: ignore[no-any-return]
+        return v  # type: ignore[return-value]
+
+    @field_validator("launch_args", mode="before")
+    @classmethod
+    def parse_launch_args(cls, v: object) -> list[str]:
         import json
 
         if isinstance(v, str):

@@ -156,6 +156,49 @@ class TestUploadHappyPath:
 
         cfg.get_settings.cache_clear()
 
+    async def test_upload_detects_javascript_package(
+        self, client: AsyncClient, auth_headers: dict[str, str], tmp_path
+    ) -> None:
+        import os
+
+        import hub.config as cfg
+
+        os.environ["SERVERS_DIR"] = str(tmp_path)
+        cfg.get_settings.cache_clear()
+
+        data = _make_zip(
+            manifest={
+                "name": "node-firefly",
+                "version": "3.0.0",
+                "description": "Firefly III MCP server",
+                "entrypoint": "index.js",
+                "env": {
+                    "FIREFLY_URL": {"required": True},
+                    "FIREFLY_TOKEN": {"required": True, "secret": True},
+                },
+            },
+            include_requirements=False,
+            include_entrypoint=False,
+            extra_files={
+                "index.js": "console.error('ready')\n",
+                "package.json": '{"scripts":{"start":"node index.js"}}\n',
+            },
+        )
+        resp = await client.post(
+            "/api/v1/upload",
+            files={"file": ("server.zip", data, "application/zip")},
+            headers=auth_headers,
+        )
+
+        assert resp.status_code == 201
+        server = resp.json()["data"]["server"]
+        assert server["language"] == "javascript"
+        assert server["entrypoint_module"] == "index.js"
+        assert server["env_vars"] == {"FIREFLY_URL": "", "FIREFLY_TOKEN": ""}
+        assert (tmp_path / "node-firefly" / "package.json").exists()
+
+        cfg.get_settings.cache_clear()
+
 
 class TestCodebaseUpload:
     async def test_upload_codebase_server(
@@ -374,6 +417,63 @@ class TestUploadValidation:
         )
         assert resp.status_code == 422
         assert "requirements.txt or pyproject.toml" in resp.json()["detail"]
+
+    async def test_javascript_upload_requires_package_json(
+        self, client: AsyncClient, auth_headers: dict[str, str]
+    ) -> None:
+        data = _make_zip(
+            manifest={
+                "name": "node-no-package",
+                "version": "1.0.0",
+                "entrypoint": "index.js",
+            },
+            include_requirements=False,
+            include_entrypoint=False,
+            extra_files={"index.js": "console.error('ready')\n"},
+        )
+        resp = await client.post(
+            "/api/v1/upload",
+            files={"file": ("server.zip", data, "application/zip")},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 422
+        assert "package.json" in resp.json()["detail"]
+
+    async def test_javascript_upload_accepts_github_download_zip_layout(
+        self, client: AsyncClient, auth_headers: dict[str, str], tmp_path
+    ) -> None:
+        import os
+
+        import hub.config as cfg
+
+        os.environ["SERVERS_DIR"] = str(tmp_path)
+        cfg.get_settings.cache_clear()
+
+        data = _make_zip(
+            manifest={
+                "name": "firefly-zip",
+                "version": "3.0.0",
+                "entrypoint": "mcp-server-firefly-iii-main/index.js",
+            },
+            include_requirements=False,
+            include_entrypoint=False,
+            extra_files={
+                "mcp-server-firefly-iii-main/index.js": "console.error('ready')\n",
+                "mcp-server-firefly-iii-main/package.json": '{"name":"firefly"}\n',
+            },
+        )
+        resp = await client.post(
+            "/api/v1/upload",
+            files={"file": ("server.zip", data, "application/zip")},
+            headers=auth_headers,
+        )
+
+        assert resp.status_code == 201
+        server = resp.json()["data"]["server"]
+        assert server["language"] == "javascript"
+        assert server["entrypoint_module"] == "mcp-server-firefly-iii-main/index.js"
+
+        cfg.get_settings.cache_clear()
 
     async def test_zip_slip_rejected(
         self, client: AsyncClient, auth_headers: dict[str, str]

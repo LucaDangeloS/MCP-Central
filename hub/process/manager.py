@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import traceback
+from collections import defaultdict
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -22,7 +23,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from hub.config import get_settings
 from hub.models.log_entry import LogLevel, LogStream
 from hub.models.server import McpServer, ServerStatus
-from hub.process.sandbox import SandboxConfig, create_server_venv
+from hub.process.sandbox import (
+    SandboxConfig,
+    ServerRuntime,
+    create_server_runtime,
+    find_node_package_dir,
+)
 
 if TYPE_CHECKING:
     pass
@@ -157,6 +163,8 @@ class ProcessManager:
         self._health_tasks: dict[str, asyncio.Task[None]] = {}
         self._log_tasks: dict[str, asyncio.Task[None]] = {}
         self._settings = get_settings()
+        self._lifecycle_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        self._start_semaphore = asyncio.Semaphore(self._settings.server_start_concurrency)
 
     # ------------------------------------------------------------------ #
     # Public lifecycle API                                                  #
@@ -174,7 +182,7 @@ class ProcessManager:
             )
             servers = result.scalars().all()
 
-        for server in servers:
+        async def _start_with_error_logging(server: McpServer) -> None:
             try:
                 await self.start_server(server.name)
             except Exception as exc:
@@ -185,8 +193,18 @@ class ProcessManager:
                     traceback=traceback.format_exc(),
                 )
 
+        await asyncio.gather(*[_start_with_error_logging(server) for server in servers])
+
     async def start_server(self, server_name: str) -> None:
         """Start a registered MCP server by name."""
+        async with self._lifecycle_locks[server_name]:
+            await self._start_server_locked(server_name)
+
+    async def _start_server_locked(self, server_name: str) -> None:
+        async with self._start_semaphore:
+            await self._start_server_unlocked(server_name)
+
+    async def _start_server_unlocked(self, server_name: str) -> None:
         if server_name in self._processes and self._processes[server_name].is_running:
             logger.warning("start_server_already_running", server_name=server_name)
             return
@@ -199,32 +217,41 @@ class ProcessManager:
 
         config = self._make_sandbox_config(server)
 
-        # Ensure venv exists. Codebase-backed servers refresh dependencies on every start
-        # so active development picks up requirements.txt or pyproject.toml changes.
+        # Ensure runtime dependencies exist. Codebase-backed servers refresh dependencies
+        # on every start so active development picks up metadata changes.
         venv_dir = self._settings.servers_dir / server.path / ".venv"
         server_dir = self._settings.servers_dir / server.path
-        if server.install_on_start and venv_dir.exists():
+        runtime_dir = venv_dir
+        if server.language != "python":
+            package_dir = find_node_package_dir(server_dir, server.entrypoint_module) or server_dir
+            runtime_dir = package_dir / "node_modules"
+        if server.install_on_start and runtime_dir.exists():
             try:
                 import shutil
 
-                await asyncio.to_thread(shutil.rmtree, venv_dir)
+                await asyncio.to_thread(shutil.rmtree, runtime_dir)
             except Exception as exc:
                 tb = traceback.format_exc()
                 logger.error(
-                    "venv_refresh_failed",
+                    "runtime_refresh_failed",
                     server_name=server_name,
                     error=str(exc),
                     traceback=tb,
                 )
                 await self._update_status(server_name, ServerStatus.error, last_error=tb)
                 raise
-        if not venv_dir.exists():
+        if not runtime_dir.exists():
             try:
-                await create_server_venv(server_dir, venv_dir)
+                await create_server_runtime(
+                    server_dir,
+                    venv_dir,
+                    self._server_runtime(server.language),
+                    server.entrypoint_module,
+                )
             except Exception as exc:
                 tb = traceback.format_exc()
                 logger.error(
-                    "venv_creation_failed",
+                    "runtime_creation_failed",
                     server_name=server_name,
                     error=str(exc),
                     traceback=tb,
@@ -276,6 +303,10 @@ class ProcessManager:
 
     async def stop_server(self, server_name: str) -> None:
         """Stop a running MCP server."""
+        async with self._lifecycle_locks[server_name]:
+            await self._stop_server_unlocked(server_name)
+
+    async def _stop_server_unlocked(self, server_name: str) -> None:
         sp = self._processes.get(server_name)
         if sp is None:
             return
@@ -294,18 +325,21 @@ class ProcessManager:
 
     async def restart_server(self, server_name: str) -> None:
         """Stop then start an MCP server."""
-        await self.stop_server(server_name)
-        await self._update_status(server_name, ServerStatus.restarting)
-        await self.start_server(server_name)
+        async with self._lifecycle_locks[server_name]:
+            await self._stop_server_unlocked(server_name)
+            await self._update_status(server_name, ServerStatus.restarting)
+            await self._start_server_locked(server_name)
 
     async def stop_all(self) -> None:
         """Gracefully stop all running servers — called at hub shutdown."""
-        names = list(self._processes.keys())
-        for name in names:
+        async def _stop_with_error_logging(name: str) -> None:
             try:
                 await self.stop_server(name)
             except Exception as exc:
                 logger.error("stop_server_error", server_name=name, error=str(exc))
+
+        names = list(self._processes.keys())
+        await asyncio.gather(*[_stop_with_error_logging(name) for name in names])
 
     def get_process(self, server_name: str) -> _ServerProcess | None:
         return self._processes.get(server_name)
@@ -340,7 +374,7 @@ class ProcessManager:
 
             try:
                 loop = asyncio.get_running_loop()
-                deadline = loop.time() + 30.0
+                deadline = loop.time() + self._settings.server_request_timeout_seconds
                 while True:
                     remaining = deadline - loop.time()
                     if remaining <= 0:
@@ -367,7 +401,8 @@ class ProcessManager:
                     )
             except TimeoutError as exc:
                 raise RuntimeError(
-                    f"Server '{server_name}' did not respond within 30 seconds. "
+                    f"Server '{server_name}' did not respond within "
+                    f"{self._settings.server_request_timeout_seconds:g} seconds. "
                     f"Check stderr logs for errors."
                 ) from exc
 
@@ -503,9 +538,11 @@ class ProcessManager:
                     retry_count += 1
 
                     try:
-                        await self.start_server(server_name)
-                        # Reset backoff on successful restart
-                        backoff = settings.server_restart_backoff_seconds
+                        async with self._lifecycle_locks[server_name]:
+                            await self._forget_dead_process_unlocked(server_name, sp)
+                            await self._start_server_locked(server_name)
+                            # Reset backoff on successful restart
+                            backoff = settings.server_restart_backoff_seconds
                     except Exception as exc:
                         logger.error(
                             "server_restart_failed",
@@ -518,6 +555,21 @@ class ProcessManager:
 
         except asyncio.CancelledError:
             pass
+
+    async def _forget_dead_process_unlocked(
+        self,
+        server_name: str,
+        sp: _ServerProcess,
+    ) -> None:
+        """Remove stale bookkeeping before auto-restarting a dead child process."""
+        if self._processes.get(server_name) is not sp:
+            return
+        log_task = self._log_tasks.pop(server_name, None)
+        if log_task is not None:
+            log_task.cancel()
+            await asyncio.gather(log_task, return_exceptions=True)
+        self._processes.pop(server_name, None)
+        self._get_mcp_router().unregister_server(server_name)
 
     # ------------------------------------------------------------------ #
     # Helpers                                                               #
@@ -540,7 +592,26 @@ class ProcessManager:
             env_vars=env_vars,
             proxy_port=settings.proxy_port,
             max_memory_mb=settings.server_max_memory_mb,
+            language=self._server_runtime(server.language),
+            launch_command=server.launch_command,
+            launch_args=self._parse_launch_args(server),
         )
+
+    def _server_runtime(self, language: str) -> ServerRuntime:
+        if language == "javascript":
+            return "javascript"
+        if language == "typescript":
+            return "typescript"
+        return "python"
+
+    def _parse_launch_args(self, server: McpServer) -> list[str]:
+        try:
+            parsed = json.loads(server.launch_args)
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(parsed, list):
+            return []
+        return [str(arg) for arg in parsed]
 
     def _get_mcp_router(self) -> Any:
         from hub.mcp.router import McpRouter

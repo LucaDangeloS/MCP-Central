@@ -11,7 +11,9 @@ from hub.process.sandbox import (
     _WRAPPER_SCRIPT,
     SandboxConfig,
     build_dependency_install,
+    build_node_dependency_install,
     build_sandbox_env,
+    find_node_package_dir,
 )
 
 
@@ -117,6 +119,41 @@ class TestSandboxConfig:
         else:
             assert exe.endswith("python")
 
+    def test_javascript_build_cmd_uses_node_entrypoint(self) -> None:
+        config = SandboxConfig(
+            server_name="node-srv",
+            server_dir=Path("/srv/node"),
+            entrypoint_module="index.js",
+            venv_dir=Path("/srv/node/.venv"),
+            language="javascript",
+        )
+
+        assert config.build_cmd() == ["node", "index.js"]
+
+    def test_typescript_build_cmd_uses_local_tsx(self) -> None:
+        config = SandboxConfig(
+            server_name="ts-srv",
+            server_dir=Path("/srv/ts"),
+            entrypoint_module="src/index.ts",
+            venv_dir=Path("/srv/ts/.venv"),
+            language="typescript",
+        )
+
+        assert config.build_cmd() == ["npx", "--no-install", "tsx", "src/index.ts"]
+
+    def test_custom_launch_command_uses_argv_list(self) -> None:
+        config = SandboxConfig(
+            server_name="npx-srv",
+            server_dir=Path("/srv/npx"),
+            entrypoint_module="package.json",
+            venv_dir=Path("/srv/npx/.venv"),
+            language="javascript",
+            launch_command="npx",
+            launch_args=["--no-install", "mcp-server"],
+        )
+
+        assert config.build_cmd() == ["npx", "--no-install", "mcp-server"]
+
 
 class TestDependencyInstall:
     def test_requirements_install_uses_venv_pip(self, tmp_path: Path) -> None:
@@ -166,6 +203,56 @@ class TestDependencyInstall:
 
         with pytest.raises(RuntimeError, match="uv is required"):
             build_dependency_install(server_dir, server_dir / ".venv")
+
+    def test_package_json_install_uses_npm_install(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        server_dir = tmp_path / "server"
+        server_dir.mkdir()
+        (server_dir / "package.json").write_text('{"name":"server"}\n', encoding="utf-8")
+        monkeypatch.setattr("hub.process.sandbox.shutil.which", lambda name: "/usr/bin/npm")
+
+        install = build_node_dependency_install(server_dir)
+
+        assert install is not None
+        assert install.source == "package_json"
+        assert install.command == ["/usr/bin/npm", "install", "--include=dev"]
+        assert install.env is not None
+        assert install.env["NPM_CONFIG_AUDIT"] == "false"
+
+    def test_package_lock_install_uses_npm_ci(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        server_dir = tmp_path / "server"
+        server_dir.mkdir()
+        (server_dir / "package.json").write_text('{"name":"server"}\n', encoding="utf-8")
+        (server_dir / "package-lock.json").write_text('{"lockfileVersion":3}\n', encoding="utf-8")
+        monkeypatch.setattr("hub.process.sandbox.shutil.which", lambda name: "/usr/bin/npm")
+
+        install = build_node_dependency_install(server_dir)
+
+        assert install is not None
+        assert install.source == "package_lock"
+        assert install.command == ["/usr/bin/npm", "ci", "--include=dev"]
+
+    def test_nested_entrypoint_finds_nearest_package_json(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        server_dir = tmp_path / "server"
+        package_dir = server_dir / "mcp-server-firefly-iii-main"
+        package_dir.mkdir(parents=True)
+        (package_dir / "package.json").write_text('{"name":"firefly"}\n', encoding="utf-8")
+        monkeypatch.setattr("hub.process.sandbox.shutil.which", lambda name: "/usr/bin/npm")
+
+        found = find_node_package_dir(server_dir, "mcp-server-firefly-iii-main/index.js")
+        install = build_node_dependency_install(
+            server_dir,
+            "mcp-server-firefly-iii-main/index.js",
+        )
+
+        assert found == package_dir
+        assert install is not None
+        assert install.command == ["/usr/bin/npm", "install", "--include=dev"]
 
 
 class TestWrapperScript:

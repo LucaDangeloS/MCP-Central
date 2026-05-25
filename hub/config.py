@@ -90,6 +90,18 @@ class Settings(BaseSettings):
         default=5.0,
         description="Initial backoff between restart attempts (doubles each time)",
     )
+    server_start_concurrency: int = Field(
+        default=4,
+        ge=1,
+        le=32,
+        description="Maximum MCP server processes to start concurrently",
+    )
+    server_request_timeout_seconds: float = Field(
+        default=30.0,
+        ge=1.0,
+        le=300.0,
+        description="Timeout for one MCP JSON-RPC request forwarded to a child server",
+    )
     server_health_check_interval: float = Field(
         default=30.0,
         description="Seconds between health checks for each running MCP server",
