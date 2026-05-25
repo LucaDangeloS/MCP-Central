@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+import json
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from httpx import AsyncClient
 
@@ -96,7 +97,7 @@ class TestMcpRouter:
         pm.list_running.return_value = []
         router = McpRouter(pm)
 
-        result = await router.route_tools_call("server-a__search", {}, 1)
+        result = await router.route_tools_call("server-a__search", {}, 1, MagicMock())
         assert "error" in result
         assert result["error"]["code"] == -32001
 
@@ -104,7 +105,7 @@ class TestMcpRouter:
         pm = MagicMock()
         router = McpRouter(pm)
 
-        result = await router.route_tools_call("plain_tool", {}, 1)
+        result = await router.route_tools_call("plain_tool", {}, 1, MagicMock())
         assert "error" in result
         assert result["error"]["code"] == -32602
 
@@ -116,7 +117,9 @@ class TestMcpRouter:
         pm.send_jsonrpc = AsyncMock(side_effect=RuntimeError("server exploded"))
         router = McpRouter(pm)
 
-        result = await router.route_tools_call("server-a__tool", {}, 1)
+        with patch("hub.mcp.router.record_tool_call") as record:
+            result = await router.route_tools_call("server-a__tool", {}, 1, MagicMock())
+        record.assert_awaited_once()
         assert "error" in result
         assert "traceback" in result["error"]["data"]
         assert "RuntimeError" in result["error"]["data"]["traceback"]
@@ -139,7 +142,10 @@ class TestMcpHttpEndpoints:
 
     async def test_initialize(self, client: AsyncClient) -> None:
         mock_pm = self._mock_pm_with_tools()
-        with patch("hub.mcp.proxy.get_process_manager", return_value=mock_pm):
+        with (
+            patch("hub.mcp.proxy.get_process_manager", return_value=mock_pm),
+            patch("hub.api.servers.get_process_manager", return_value=mock_pm),
+        ):
             resp = await client.post(
                 "/mcp",
                 json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
@@ -149,9 +155,59 @@ class TestMcpHttpEndpoints:
         assert body["result"]["protocolVersion"] == "2025-03-26"
         assert body["result"]["serverInfo"]["name"] == "MCP Central Hub"
 
+    async def test_streamable_http_post_can_return_sse(self, client: AsyncClient) -> None:
+        mock_pm = self._mock_pm_with_tools()
+        with (
+            patch("hub.mcp.proxy.get_process_manager", return_value=mock_pm),
+            patch("hub.api.servers.get_process_manager", return_value=mock_pm),
+        ):
+            resp = await client.post(
+                "/mcp",
+                json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+                headers={"Accept": "application/json, text/event-stream"},
+            )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/event-stream")
+        assert "event: message" in resp.text
+        assert '"protocolVersion":"2025-03-26"' in resp.text
+
+    async def test_streamable_http_get_opens_sse(self, client: AsyncClient) -> None:
+        resp = await client.get("/mcp", headers={"Accept": "text/event-stream"})
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/event-stream")
+        assert ": connected" in resp.text
+
+    async def test_streamable_http_get_without_sse_accept_returns_405(
+        self, client: AsyncClient
+    ) -> None:
+        resp = await client.get("/mcp", headers={"Accept": "application/json"})
+        assert resp.status_code == 405
+
+    async def test_notifications_are_accepted_without_response(
+        self,
+        client: AsyncClient,
+    ) -> None:
+        resp = await client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+        )
+        assert resp.status_code == 202
+        assert resp.content == b""
+
+    async def test_cross_origin_mcp_request_is_rejected(self, client: AsyncClient) -> None:
+        resp = await client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
+            headers={"Origin": "https://attacker.example"},
+        )
+        assert resp.status_code == 403
+
     async def test_ping(self, client: AsyncClient) -> None:
         mock_pm = self._mock_pm_with_tools()
-        with patch("hub.mcp.proxy.get_process_manager", return_value=mock_pm):
+        with (
+            patch("hub.mcp.proxy.get_process_manager", return_value=mock_pm),
+            patch("hub.api.servers.get_process_manager", return_value=mock_pm),
+        ):
             resp = await client.post(
                 "/mcp",
                 json={"jsonrpc": "2.0", "id": 2, "method": "ping"},
@@ -198,7 +254,7 @@ class TestMcpHttpEndpoints:
 
         with patch("hub.mcp.proxy.get_process_manager", return_value=mock_pm):
             resp = await client.get("/.well-known/mcp-central.json")
-            mcp_resp = await client.get("/mcp")
+            mcp_resp = await client.get("/mcp", headers={"Accept": "text/event-stream"})
 
         assert resp.status_code == 200
         assert mcp_resp.status_code == 200
@@ -271,6 +327,56 @@ class TestMcpHttpEndpoints:
         assert resp.status_code == 200
         assert "error" in resp.json()
         assert resp.json()["error"]["code"] == -32601
+
+    async def test_tools_call_records_usage_counts(
+        self,
+        client: AsyncClient,
+        auth_headers: dict[str, str],
+    ) -> None:
+        await client.post(
+            "/api/v1/servers",
+            json={"name": "usage-srv", "path": "usage-srv"},
+            headers=auth_headers,
+        )
+        mock_pm = MagicMock()
+        mock_pm.list_running.return_value = ["usage-srv"]
+        mock_pm.send_jsonrpc = AsyncMock(
+            return_value=json.dumps({"jsonrpc": "2.0", "id": 7, "result": {"content": []}})
+        )
+        mock_pm._mcp_router = McpRouter(mock_pm)
+        mock_pm._mcp_router.register_tools("usage-srv", [{"name": "search"}])
+
+        with (
+            patch("hub.mcp.proxy.get_process_manager", return_value=mock_pm),
+            patch("hub.api.servers.get_process_manager", return_value=mock_pm),
+        ):
+            first = await client.post(
+                "/mcp/server/usage-srv",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 7,
+                    "method": "tools/call",
+                    "params": {"name": "usage-srv__search", "arguments": {"q": "one"}},
+                },
+            )
+            second = await client.post(
+                "/mcp/server/usage-srv",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 8,
+                    "method": "tools/call",
+                    "params": {"name": "usage-srv__search", "arguments": {"q": "two"}},
+                },
+            )
+            tools = await client.get("/api/v1/servers/usage-srv/tools", headers=auth_headers)
+
+        stats = await client.get("/api/v1/stats", headers=auth_headers)
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert tools.json()["data"][0]["call_count"] == 2
+        assert stats.json()["data"]["tools"]["calls_by_server"] == {"usage-srv": 2}
+        assert stats.json()["data"]["tools"]["total_calls"] == 2
 
     async def test_invalid_json_body_returns_parse_error(self, client: AsyncClient) -> None:
         resp = await client.post(

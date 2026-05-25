@@ -8,8 +8,11 @@ from datetime import UTC, datetime
 from typing import Any
 
 import structlog
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from hub.mcp.namespace import extract_server_name, namespace_tool_name
+from hub.models.tool_call import ToolCallCount
 from hub.process.manager import ProcessManager
 
 logger = structlog.get_logger(__name__)
@@ -89,6 +92,7 @@ class McpRouter:
         namespaced_tool: str,
         arguments: dict[str, Any],
         request_id: int | str | None,
+        db: AsyncSession,
     ) -> dict[str, Any]:
         """Route a ``tools/call`` request to the appropriate server.
 
@@ -126,6 +130,7 @@ class McpRouter:
         )
 
         try:
+            await record_tool_call(db, server_name, original_tool)
             raw_response = await self._pm.send_jsonrpc(server_name, sub_request)
         except Exception as exc:
             tb = traceback.format_exc()
@@ -168,6 +173,29 @@ class McpRouter:
                 message=f"Server '{server_name}' returned invalid JSON: {exc}",
                 data={"server": server_name, "raw_response": raw_response},
             )
+
+
+async def record_tool_call(db: AsyncSession, server_name: str, tool_name: str) -> None:
+    """Increment the aggregate counter for one routed tool call."""
+    result = await db.execute(
+        select(ToolCallCount).where(
+            ToolCallCount.server_name == server_name,
+            ToolCallCount.tool_name == tool_name,
+        )
+    )
+    counter = result.scalar_one_or_none()
+    now = datetime.now(UTC)
+    if counter is None:
+        counter = ToolCallCount(
+            server_name=server_name,
+            tool_name=tool_name,
+            call_count=1,
+            last_called_at=now,
+        )
+        db.add(counter)
+        return
+    counter.call_count += 1
+    counter.last_called_at = now
 
 
 def _jsonrpc_error(

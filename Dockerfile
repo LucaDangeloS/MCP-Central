@@ -62,6 +62,12 @@ COPY --from=python-builder /build/.venv /app/.venv
 # Server packages may be uv projects with pyproject.toml/uv.lock metadata.
 COPY --from=python-builder /usr/local/bin/uv /usr/local/bin/uv
 
+# JavaScript/TypeScript MCP packages are installed and launched with Node/npm/npx.
+COPY --from=frontend-builder /usr/local/bin/node /usr/local/bin/node
+COPY --from=frontend-builder /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
+    ln -sf ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+
 # Copy application source
 COPY hub/ /app/hub/
 COPY docs/ /app/docs/

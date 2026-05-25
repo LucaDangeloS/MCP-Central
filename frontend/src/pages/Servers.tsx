@@ -680,6 +680,9 @@ function ServerTools({ server, onUpdated }: { server: Server; onUpdated: () => v
                         Disabled
                       </span>
                     )}
+                    <span className="text-[10px] font-sans font-medium px-1.5 py-px rounded bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-300 border border-blue-100 dark:border-blue-900/60">
+                      {tool.call_count ?? 0} calls
+                    </span>
                   </div>
                   {tool.description && (
                     <p className="mt-0.5 text-[11px] text-zinc-500 dark:text-zinc-400 leading-relaxed">

@@ -3,8 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from typing import Any
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy import event
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 from sqlalchemy.orm import DeclarativeBase
 
 from hub.config import get_settings
@@ -14,14 +21,36 @@ class Base(DeclarativeBase):
     """Shared declarative base for all ORM models."""
 
 
-def _make_engine() -> object:
+def _make_engine() -> AsyncEngine:
     settings = get_settings()
     settings.data_dir.mkdir(parents=True, exist_ok=True)
-    return create_async_engine(
+    db_url = settings.db_url
+    connect_args: dict[str, object] = {}
+    if db_url.startswith("sqlite"):
+        connect_args = {"check_same_thread": False, "timeout": 30}
+
+    created_engine = create_async_engine(
         settings.db_url,
         echo=settings.debug,
-        connect_args={"check_same_thread": False},
+        connect_args=connect_args,
+        pool_pre_ping=True,
     )
+    if db_url.startswith("sqlite"):
+        _configure_sqlite_engine(created_engine.sync_engine)
+    return created_engine
+
+
+def _configure_sqlite_engine(sync_engine: Any) -> None:
+    @event.listens_for(sync_engine, "connect")
+    def _set_sqlite_pragmas(dbapi_connection: Any, _connection_record: object) -> None:
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=30000")
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+        finally:
+            cursor.close()
 
 
 engine = _make_engine()

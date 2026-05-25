@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import structlog
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,7 +21,7 @@ from hub.api.responses import ok
 from hub.auth.admin import get_current_admin
 from hub.config import get_settings
 from hub.database import get_db
-from hub.models.server import McpServer, ServerRead, ServerStatus
+from hub.models.server import McpServer, ServerLanguage, ServerRead, ServerStatus
 
 logger = structlog.get_logger(__name__)
 _DEPLOY_TASKS: set[asyncio.Task[None]] = set()
@@ -38,8 +38,10 @@ _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 REQUIRED_MANIFEST_FIELDS = {"name", "version", "entrypoint"}
 ALLOWED_MANIFEST_FIELDS = {
     "name", "version", "description", "entrypoint", "module",
-    "python_version", "env", "capabilities", "tags",
+    "python_version", "node_version", "language", "command", "args",
+    "env", "capabilities", "tags", "tools",
 }
+ALLOWED_LAUNCH_COMMANDS = {"node", "npm", "npx"}
 
 
 class SingleFileServerCreate(BaseModel):
@@ -74,7 +76,127 @@ def _validate_manifest(manifest: dict[str, Any]) -> list[str]:
             f"Must match /^[a-z0-9][a-z0-9_-]{{1,62}}[a-z0-9]$/"
         )
 
+    language = manifest.get("language")
+    if language is not None and language not in {item.value for item in ServerLanguage}:
+        errors.append("manifest.json field 'language' must be python, javascript, or typescript")
+
+    command = manifest.get("command")
+    if command is not None:
+        if command not in ALLOWED_LAUNCH_COMMANDS:
+            errors.append("manifest.json field 'command' must be one of: node, npm, npx")
+        args = manifest.get("args", [])
+        if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
+            errors.append("manifest.json field 'args' must be an array of strings")
+
+    tools = manifest.get("tools", [])
+    if tools is not None and not isinstance(tools, list):
+        errors.append("manifest.json field 'tools' must be an array when provided")
+    elif isinstance(tools, list):
+        for index, tool in enumerate(tools):
+            if not isinstance(tool, dict):
+                errors.append(f"manifest.json tools[{index}] must be an object")
+                continue
+            tool_name = tool.get("name")
+            if not isinstance(tool_name, str) or not tool_name:
+                errors.append(f"manifest.json tools[{index}].name must be a non-empty string")
+            description = tool.get("description")
+            if description is not None and not isinstance(description, str):
+                errors.append(f"manifest.json tools[{index}].description must be a string")
+            input_schema = tool.get("inputSchema")
+            if input_schema is not None and not isinstance(input_schema, dict):
+                errors.append(f"manifest.json tools[{index}].inputSchema must be an object")
+
     return errors
+
+
+def _manifest_tools(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    tools = manifest.get("tools", [])
+    if not isinstance(tools, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for tool in tools:
+        if not isinstance(tool, dict) or not tool.get("name"):
+            continue
+        normalized_tool: dict[str, Any] = {
+            "name": str(tool["name"]),
+            "description": str(tool.get("description", "")),
+        }
+        input_schema = tool.get("inputSchema")
+        if isinstance(input_schema, dict):
+            normalized_tool["inputSchema"] = input_schema
+        else:
+            normalized_tool["inputSchema"] = {"type": "object"}
+        normalized.append(normalized_tool)
+    return normalized
+
+
+def _env_defaults_from_manifest(manifest: dict[str, Any]) -> dict[str, str]:
+    env_spec = manifest.get("env", {})
+    if not isinstance(env_spec, dict):
+        return {}
+    return dict.fromkeys(env_spec, "")
+
+
+def _detect_language(manifest: dict[str, Any], names_in_zip: list[str]) -> ServerLanguage:
+    explicit = manifest.get("language")
+    if explicit in {item.value for item in ServerLanguage}:
+        return ServerLanguage(explicit)
+
+    entrypoint = str(manifest.get("entrypoint", ""))
+    suffix = Path(entrypoint).suffix.lower()
+    if suffix in {".js", ".mjs", ".cjs"}:
+        return ServerLanguage.javascript
+    if suffix in {".ts", ".mts", ".cts"}:
+        return ServerLanguage.typescript
+    if "package.json" in names_in_zip:
+        return ServerLanguage.javascript
+    return ServerLanguage.python
+
+
+def _entrypoint_module(manifest: dict[str, Any], language: ServerLanguage) -> str:
+    entrypoint = str(manifest["entrypoint"])
+    if language == ServerLanguage.python:
+        return str(manifest.get("module", entrypoint.removesuffix(".py").replace("/", ".")))
+    return entrypoint
+
+
+def _launch_command(manifest: dict[str, Any]) -> tuple[str, list[str]]:
+    command = manifest.get("command", "")
+    args = manifest.get("args", [])
+    if not isinstance(command, str) or not command:
+        return "", []
+    if not isinstance(args, list):
+        return command, []
+    return command, [str(arg) for arg in args]
+
+
+def _validate_dependency_metadata(
+    names_in_zip: list[str],
+    language: ServerLanguage,
+    entrypoint_file: str,
+    has_custom_command: bool,
+) -> str | None:
+    if language == ServerLanguage.python:
+        if "requirements.txt" not in names_in_zip and "pyproject.toml" not in names_in_zip:
+            return "requirements.txt or pyproject.toml is missing from the ZIP root."
+        return None
+
+    if not _has_node_package_metadata(names_in_zip, entrypoint_file) and not has_custom_command:
+        return (
+            "package.json is missing from the ZIP root or the JavaScript/TypeScript "
+            "entrypoint directory."
+        )
+    return None
+
+
+def _has_node_package_metadata(names_in_zip: list[str], entrypoint_file: str) -> bool:
+    if "package.json" in names_in_zip:
+        return True
+    entrypoint_parent = Path(entrypoint_file).parent
+    if str(entrypoint_parent) == ".":
+        return False
+    package_json = entrypoint_parent / "package.json"
+    return package_json.as_posix() in names_in_zip
 
 
 def _check_zip_slip(zip_ref: zipfile.ZipFile, target_dir: Path) -> list[str]:
@@ -196,9 +318,11 @@ async def upload_server(
 
     server_name: str = manifest["name"]
     entrypoint_file: str = manifest["entrypoint"]
-    module_name: str = manifest.get("module", entrypoint_file.removesuffix(".py").replace("/", "."))
+    language = _detect_language(manifest, names_in_zip)
+    module_name = _entrypoint_module(manifest, language)
+    launch_command, launch_args = _launch_command(manifest)
     description: str = manifest.get("description", "")
-    env_spec: dict[str, Any] = manifest.get("env", {})
+    manifest_tools = _manifest_tools(manifest)
 
     # ------------------------------------------------------------------ #
     # Step 3 — check entrypoint and dependency metadata exist in ZIP        #
@@ -211,10 +335,16 @@ async def upload_server(
             ),
         )
 
-    if "requirements.txt" not in names_in_zip and "pyproject.toml" not in names_in_zip:
+    metadata_error = _validate_dependency_metadata(
+        names_in_zip,
+        language,
+        entrypoint_file,
+        bool(launch_command),
+    )
+    if metadata_error is not None:
         raise HTTPException(
             status_code=422,
-            detail="requirements.txt or pyproject.toml is missing from the ZIP root.",
+            detail=metadata_error,
         )
 
     # ------------------------------------------------------------------ #
@@ -252,24 +382,35 @@ async def upload_server(
     # ------------------------------------------------------------------ #
     # Step 6 — extract to servers_dir/<name>/                              #
     # ------------------------------------------------------------------ #
-    target_dir.mkdir(parents=True, exist_ok=True)
-    zip_ref.extractall(target_dir)
-    zip_ref.close()
+    try:
+        await asyncio.to_thread(target_dir.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread(zip_ref.extractall, target_dir)
+    except Exception:
+        await asyncio.to_thread(shutil.rmtree, target_dir, True)
+        raise
+    finally:
+        zip_ref.close()
     logger.info("server_zip_extracted", server_name=server_name, target=str(target_dir))
 
     # ------------------------------------------------------------------ #
     # Step 7 — register in DB                                              #
     # ------------------------------------------------------------------ #
     # Convert env spec to plain string dict (values come from .env at runtime)
-    env_vars: dict[str, str] = dict.fromkeys(env_spec, "")
+    env_vars = _env_defaults_from_manifest(manifest)
 
     server = McpServer(
         name=server_name,
         description=description,
         path=server_name,
         entrypoint_module=module_name,
+        language=language.value,
+        launch_command=launch_command,
+        launch_args=json.dumps(launch_args),
         env_vars=json.dumps(env_vars),
+        manifest_tools=json.dumps(manifest_tools),
         python_version_constraint=manifest.get("python_version", ""),
+        source_type="package",
+        install_on_start=False,
         auto_start=True,
         restart_on_error=True,
         status=ServerStatus.stopped.value,
@@ -291,6 +432,196 @@ async def upload_server(
             "manifest": manifest,
             "message": f"Server '{server_name}' deployed successfully. Auto-start initiated.",
         }
+    )
+
+
+@router.post(
+    "/codebase",
+    status_code=status.HTTP_201_CREATED,
+    summary="Upload or refresh a codebase-backed MCP server",
+)
+async def upload_codebase_server(
+    file: Annotated[UploadFile, File(description="ZIP file containing the MCP server codebase")],
+    _admin: AdminDep,
+    db: DbDep,
+    auto_start: bool = Query(default=True),
+    replace_existing: bool = Query(default=True),
+) -> dict[str, Any]:
+    """Upload a development/codebase MCP server.
+
+    Unlike immutable ZIP package uploads, this endpoint may refresh an existing stopped
+    codebase server with the same name. The process manager recreates the server venv on
+    each start, so dependency metadata changes are picked up during active development.
+    """
+    settings = get_settings()
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+    try:
+        zip_bytes = io.BytesIO(content)
+        zip_ref = zipfile.ZipFile(zip_bytes, "r")
+    except zipfile.BadZipFile as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Uploaded file is not a valid ZIP archive: {exc}"
+        ) from exc
+
+    names_in_zip = zip_ref.namelist()
+    if "manifest.json" not in names_in_zip:
+        raise HTTPException(
+            status_code=422,
+            detail="manifest.json is missing from the ZIP root. See docs/server-manifest.md.",
+        )
+
+    try:
+        manifest_bytes = zip_ref.read("manifest.json")
+        manifest: dict[str, Any] = json.loads(manifest_bytes.decode())
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise HTTPException(
+            status_code=422, detail=f"manifest.json is not valid JSON: {exc}"
+        ) from exc
+
+    validation_errors = _validate_manifest(manifest)
+    if validation_errors:
+        raise HTTPException(status_code=422, detail={"errors": validation_errors})
+
+    server_name: str = manifest["name"]
+    entrypoint_file: str = manifest["entrypoint"]
+    language = _detect_language(manifest, names_in_zip)
+    module_name = _entrypoint_module(manifest, language)
+    launch_command, launch_args = _launch_command(manifest)
+    description: str = manifest.get("description", "")
+    manifest_tools = _manifest_tools(manifest)
+    target_dir = settings.servers_dir / server_name
+
+    if entrypoint_file not in names_in_zip:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Entrypoint '{entrypoint_file}' listed in manifest.json was not found "
+                "in the ZIP."
+            ),
+        )
+
+    metadata_error = _validate_dependency_metadata(
+        names_in_zip,
+        language,
+        entrypoint_file,
+        bool(launch_command),
+    )
+    if metadata_error is not None:
+        raise HTTPException(
+            status_code=422,
+            detail=metadata_error,
+        )
+
+    dangerous = _check_zip_slip(zip_ref, target_dir)
+    if dangerous:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": (
+                    "ZIP contains path traversal entries (Zip Slip attack detected). "
+                    "Upload rejected."
+                ),
+                "dangerous_paths": dangerous,
+            },
+        )
+
+    existing_result = await db.execute(select(McpServer).where(McpServer.name == server_name))
+    existing = existing_result.scalar_one_or_none()
+    if existing is not None:
+        if existing.source_type != "codebase":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"A non-codebase server named '{server_name}' already exists. "
+                    "Delete it first or use a different name."
+                ),
+            )
+        if not replace_existing:
+            raise HTTPException(
+                status_code=409,
+                detail=f"A codebase server named '{server_name}' already exists.",
+            )
+        if existing.status in {ServerStatus.running.value, ServerStatus.starting.value}:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Stop server '{server_name}' before refreshing its codebase.",
+            )
+
+    try:
+        if target_dir.exists():
+            await asyncio.to_thread(shutil.rmtree, target_dir)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(zip_ref.extractall, target_dir)
+    except Exception as exc:
+        await asyncio.to_thread(shutil.rmtree, target_dir, True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to write codebase server package '{server_name}': {exc}",
+        ) from exc
+    finally:
+        zip_ref.close()
+
+    logger.info("server_codebase_extracted", server_name=server_name, target=str(target_dir))
+
+    env_defaults = _env_defaults_from_manifest(manifest)
+    if existing is None:
+        server = McpServer(
+            name=server_name,
+            description=description,
+            path=server_name,
+            entrypoint_module=module_name,
+            language=language.value,
+            launch_command=launch_command,
+            launch_args=json.dumps(launch_args),
+            env_vars=json.dumps(env_defaults),
+            manifest_tools=json.dumps(manifest_tools),
+            python_version_constraint=manifest.get("python_version", ""),
+            source_type="codebase",
+            install_on_start=True,
+            auto_start=auto_start,
+            restart_on_error=True,
+            status=ServerStatus.stopped.value,
+        )
+        db.add(server)
+        await db.flush()
+    else:
+        existing_env = json.loads(existing.env_vars) if existing.env_vars else {}
+        merged_env = {**env_defaults, **existing_env}
+        server = existing
+        server.description = description
+        server.path = server_name
+        server.entrypoint_module = module_name
+        server.language = language.value
+        server.launch_command = launch_command
+        server.launch_args = json.dumps(launch_args)
+        server.env_vars = json.dumps(merged_env)
+        server.manifest_tools = json.dumps(manifest_tools)
+        server.python_version_constraint = manifest.get("python_version", "")
+        server.source_type = "codebase"
+        server.install_on_start = True
+        server.auto_start = auto_start
+        await db.flush()
+
+    await db.refresh(server)
+    logger.info("server_registered_via_codebase_upload", server_name=server_name, id=server.id)
+
+    if auto_start:
+        await _start_deployed_server(server_name)
+
+    action = "refreshed" if existing is not None else "created"
+    message = (
+        f"Codebase server '{server_name}' {action} successfully. Auto-start initiated."
+        if auto_start
+        else (
+            f"Codebase server '{server_name}' {action} successfully. "
+            "Start it from the Servers page."
+        )
+    )
+    return ok(
+        {"server": ServerRead.model_validate(server), "manifest": manifest, "message": message}
     )
 
 
@@ -341,6 +672,7 @@ async def create_single_file_server(
         "entrypoint": "main.py",
         "module": "main",
         "env": {key: {} for key in payload.env_vars},
+        "tools": [],
     }
 
     server = McpServer(
@@ -348,8 +680,14 @@ async def create_single_file_server(
         description=payload.description,
         path=server_name,
         entrypoint_module="main",
+        language=ServerLanguage.python.value,
+        launch_command="",
+        launch_args="[]",
         env_vars=json.dumps(payload.env_vars),
+        manifest_tools="[]",
         python_version_constraint="",
+        source_type="single_file",
+        install_on_start=False,
         auto_start=payload.auto_start,
         restart_on_error=True,
         status=ServerStatus.stopped.value,

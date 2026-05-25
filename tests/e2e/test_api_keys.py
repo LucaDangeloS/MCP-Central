@@ -48,7 +48,7 @@ class TestApiKeyCreationAndUsage:
             )
         assert resp.status_code == 200
 
-    async def test_valid_api_key_in_query_param(
+    async def test_api_key_in_query_param_is_rejected(
         self, client: AsyncClient, auth_headers: dict[str, str]
     ) -> None:
         _group_id, plaintext = await self._setup_group_with_key(client, auth_headers, "query-grp")
@@ -61,7 +61,7 @@ class TestApiKeyCreationAndUsage:
                 f"/mcp/query-grp?api_key={plaintext}",
                 json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
             )
-        assert resp.status_code == 200
+        assert resp.status_code == 401
 
     async def test_invalid_api_key_rejected(
         self, client: AsyncClient, auth_headers: dict[str, str]

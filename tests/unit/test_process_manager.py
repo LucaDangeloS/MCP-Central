@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -55,18 +56,22 @@ async def _register_server(
     script_content: str,
     session_factory: async_sessionmaker[AsyncSession],
     restart_on_error: bool = True,
+    entrypoint: str = "main.py",
+    entrypoint_module: str = "main",
+    language: str = "python",
 ) -> None:
     """Write a mock server script and register it in the DB."""
     server_dir = tmp_path / name
     server_dir.mkdir(exist_ok=True)
-    (server_dir / "main.py").write_text(script_content)
+    (server_dir / entrypoint).write_text(script_content)
     # No requirements.txt → venv creation skipped at install step
 
     async with session_factory() as db:
         server = McpServer(
             name=name,
             path=name,
-            entrypoint_module="main",
+            entrypoint_module=entrypoint_module,
+            language=language,
             auto_start=False,
             restart_on_error=restart_on_error,
             status=ServerStatus.stopped.value,
@@ -93,6 +98,18 @@ def main():
             continue
         resp = {"jsonrpc": "2.0", "id": req.get("id"), "result": {"echo": req}}
         print(json.dumps(resp), flush=True)
+"""
+
+_NODE_ECHO_SERVER = """\
+const readline = require("node:readline");
+
+const rl = readline.createInterface({ input: process.stdin });
+rl.on("line", (line) => {
+  if (!line.trim()) return;
+  const req = JSON.parse(line);
+  const resp = { jsonrpc: "2.0", id: req.id, result: { echo: req } };
+  console.log(JSON.stringify(resp));
+});
 """
 
 _TOOLS_SERVER = """\
@@ -206,6 +223,51 @@ class TestProcessManagerStartStop:
         await pm.start_server("idempotent-srv")
         pid2 = pm.get_process("idempotent-srv").pid
         assert pid1 == pid2
+
+    async def test_concurrent_start_is_idempotent(
+        self,
+        pm: ProcessManager,
+        tmp_path: Path,
+    ) -> None:
+        await _register_server(tmp_path, "concurrent-srv", _ECHO_SERVER, _SessionFactory)
+
+        await asyncio.gather(
+            pm.start_server("concurrent-srv"),
+            pm.start_server("concurrent-srv"),
+            pm.start_server("concurrent-srv"),
+        )
+
+        assert pm.list_running() == ["concurrent-srv"]
+        await pm.stop_server("concurrent-srv")
+
+    async def test_auto_start_runs_servers_concurrently(
+        self,
+        pm: ProcessManager,
+        tmp_path: Path,
+    ) -> None:
+        await _register_server(tmp_path, "auto-a", _ECHO_SERVER, _SessionFactory)
+        await _register_server(tmp_path, "auto-b", _ECHO_SERVER, _SessionFactory)
+        async with _SessionFactory() as db:
+            result = await db.execute(select(McpServer))
+            for server in result.scalars().all():
+                server.auto_start = True
+            await db.commit()
+
+        active = 0
+        max_active = 0
+
+        async def fake_start(server_name: str) -> None:
+            nonlocal active, max_active
+            active += 1
+            max_active = max(max_active, active)
+            await asyncio.sleep(0.05)
+            active -= 1
+
+        pm.start_server = fake_start  # type: ignore[method-assign]
+
+        await pm.start_all_auto_start()
+
+        assert max_active == 2
 
     async def test_stop_not_running_is_safe(self, pm: ProcessManager) -> None:
         # Should not raise
@@ -382,6 +444,32 @@ class TestJsonRpcBridge:
         assert "result" in parsed
 
         await pm.stop_server("rpc-srv")
+
+    @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+    async def test_send_jsonrpc_gets_response_from_javascript_server(
+        self,
+        pm: ProcessManager,
+        tmp_path: Path,
+    ) -> None:
+        await _register_server(
+            tmp_path,
+            "node-rpc",
+            _NODE_ECHO_SERVER,
+            _SessionFactory,
+            entrypoint="index.js",
+            entrypoint_module="index.js",
+            language="javascript",
+        )
+        await pm.start_server("node-rpc")
+
+        request = json.dumps({"jsonrpc": "2.0", "id": 2, "method": "ping", "params": {}})
+        response = await pm.send_jsonrpc("node-rpc", request)
+        assert response is not None
+        parsed = json.loads(response)
+        assert parsed["id"] == 2
+        assert parsed["result"]["echo"]["method"] == "ping"
+
+        await pm.stop_server("node-rpc")
 
     async def test_send_jsonrpc_to_stopped_server_raises(self, pm: ProcessManager) -> None:
         with pytest.raises(RuntimeError, match="not running"):

@@ -14,7 +14,8 @@ import structlog
 
 logger = structlog.get_logger(__name__)
 
-DependencySource = Literal["requirements", "pyproject"]
+ServerRuntime = Literal["python", "javascript", "typescript"]
+DependencySource = Literal["requirements", "pyproject", "package_json", "package_lock"]
 
 
 class DependencyInstall(NamedTuple):
@@ -67,6 +68,9 @@ class SandboxConfig:
     env_vars: dict[str, str] = field(default_factory=dict)
     proxy_port: int = 8888
     max_memory_mb: int = 512
+    language: ServerRuntime = "python"
+    launch_command: str = ""
+    launch_args: list[str] = field(default_factory=list)
 
     @property
     def python_executable(self) -> str:
@@ -76,6 +80,12 @@ class SandboxConfig:
 
     def build_cmd(self) -> list[str]:
         """Return the argv list for subprocess.  Never uses shell=True."""
+        if self.launch_command:
+            return [self.launch_command, *self.launch_args]
+        if self.language == "javascript":
+            return ["node", self.entrypoint_module]
+        if self.language == "typescript":
+            return ["npx", "--no-install", "tsx", self.entrypoint_module]
         wrapper = _WRAPPER_SCRIPT.format(module=self.entrypoint_module)
         return [self.python_executable, "-u", "-c", wrapper]
 
@@ -120,6 +130,7 @@ def build_sandbox_env(
         "PYTHONPATH": str(server_dir),
         "PYTHONUNBUFFERED": "1",
         "PYTHONFAULTHANDLER": "1",  # dump traceback on SIGSEGV / SIGBUS
+        "NODE_NO_WARNINGS": "1",
         # Identity for logging
         "MCP_SERVER_NAME": server_name,
         # Merge server-specific vars (may override proxy etc. intentionally)
@@ -181,6 +192,46 @@ async def create_server_venv(server_dir: Path, venv_dir: Path) -> None:
         log.info("no_dependency_metadata_skipping_install")
 
 
+async def create_server_runtime(
+    server_dir: Path,
+    venv_dir: Path,
+    language: ServerRuntime,
+    entrypoint_module: str,
+) -> None:
+    """Install the runtime dependencies needed by one MCP server package."""
+    if language == "python":
+        await create_server_venv(server_dir, venv_dir)
+        return
+
+    install = build_node_dependency_install(server_dir, entrypoint_module)
+    if install is None:
+        logger.info("no_node_dependency_metadata_skipping_install", server_dir=str(server_dir))
+        return
+
+    logger.info(
+        "installing_node_server_dependencies",
+        server_dir=str(server_dir),
+        source=install.source,
+    )
+    proc = await asyncio.create_subprocess_exec(
+        *install.command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=str(find_node_package_dir(server_dir, entrypoint_module) or server_dir),
+        env=install.env,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"Node dependency install failed for server at '{server_dir}'.\n"
+            f"Source: {install.source}\n"
+            f"Command: {' '.join(install.command)}\n"
+            f"Return code: {proc.returncode}\n"
+            f"stdout:\n{stdout.decode()}\n"
+            f"stderr:\n{stderr.decode()}"
+        )
+
+
 def build_dependency_install(server_dir: Path, venv_dir: Path) -> DependencyInstall | None:
     """Return the installer command for a server package, if dependency metadata exists."""
     requirements = server_dir / "requirements.txt"
@@ -209,6 +260,62 @@ def build_dependency_install(server_dir: Path, venv_dir: Path) -> DependencyInst
             env=env,
         )
 
+    return None
+
+
+def build_node_dependency_install(
+    server_dir: Path,
+    entrypoint_module: str = "",
+) -> DependencyInstall | None:
+    """Return the npm installer command for a Node-backed server package."""
+    package_dir = find_node_package_dir(server_dir, entrypoint_module)
+    if package_dir is None:
+        return None
+
+    npm = shutil.which("npm")
+    if npm is None:
+        raise RuntimeError(
+            "npm is required to install JavaScript/TypeScript MCP server packages, "
+            "but no npm executable was found on PATH."
+        )
+
+    env = os.environ.copy()
+    env["NPM_CONFIG_FUND"] = "false"
+    env["NPM_CONFIG_AUDIT"] = "false"
+    if (package_dir / "package-lock.json").exists():
+        return DependencyInstall(
+            source="package_lock",
+            command=[npm, "ci", "--include=dev"],
+            env=env,
+        )
+
+    return DependencyInstall(
+        source="package_json",
+        command=[npm, "install", "--include=dev"],
+        env=env,
+    )
+
+
+def find_node_package_dir(server_dir: Path, entrypoint_module: str) -> Path | None:
+    """Find package.json at the package root or near a nested JS/TS entrypoint."""
+    root_package = server_dir / "package.json"
+    if root_package.exists():
+        return server_dir
+
+    if not entrypoint_module:
+        return None
+
+    entrypoint_path = (server_dir / entrypoint_module).resolve()
+    server_root = server_dir.resolve()
+    for candidate in [entrypoint_path.parent, *entrypoint_path.parents]:
+        if candidate == server_root.parent:
+            break
+        try:
+            candidate.relative_to(server_root)
+        except ValueError:
+            break
+        if (candidate / "package.json").exists():
+            return candidate
     return None
 
 

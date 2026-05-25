@@ -74,6 +74,8 @@ Configuration is controlled through `.env`; there is only one `docker-compose.ym
 | `SERVER_MAX_MEMORY_MB` | `512` | Memory limit per managed MCP server process. |
 | `SERVER_RESTART_MAX_RETRIES` | `5` | Maximum automatic restart attempts. |
 | `SERVER_RESTART_BACKOFF_SECONDS` | `5` | Initial restart backoff in seconds. |
+| `SERVER_START_CONCURRENCY` | `4` | Maximum MCP server processes to start concurrently. |
+| `SERVER_REQUEST_TIMEOUT_SECONDS` | `30` | Timeout for one JSON-RPC request forwarded to a managed server. |
 | `SERVER_HEALTH_CHECK_INTERVAL` | `30` | Health check interval for managed servers. |
 | `HUB_MEMORY_LIMIT` | `2g` | Docker resource memory limit for the hub service. |
 | `HUB_CPU_LIMIT` | `2.0` | Docker resource CPU limit for the hub service. |

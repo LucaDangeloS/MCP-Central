@@ -43,7 +43,6 @@ export default function Login() {
           </p>
           <div className="mt-5 space-y-3 text-sm">
             <DiscoveryLink label="Discovery JSON" href="/.well-known/mcp-central.json" />
-            <DiscoveryLink label="MCP endpoint info" href="/mcp" />
             <DiscoveryLink label="OpenAPI JSON" href="/api/openapi.json" />
             <DiscoveryLink label="API docs" href="/api/docs" />
           </div>

@@ -20,7 +20,7 @@ export default function Upload() {
   const [dragging, setDragging] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [creating, setCreating] = useState(false)
-  const [mode, setMode] = useState<'zip' | 'editor'>('zip')
+  const [mode, setMode] = useState<'zip' | 'codebase' | 'editor'>('zip')
   const [result, setResult] = useState<{ server: Server; message: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [serverName, setServerName] = useState('')
@@ -38,7 +38,9 @@ export default function Upload() {
     setResult(null)
     setUploading(true)
     try {
-      const resp = await uploadApi.upload(file)
+      const resp = mode === 'codebase'
+        ? await uploadApi.uploadCodebase(file, { auto_start: autoStart, replace_existing: true })
+        : await uploadApi.upload(file)
       setResult({ server: resp.data.server, message: resp.data.message })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Upload failed')
@@ -52,7 +54,7 @@ export default function Upload() {
     setDragging(false)
     const file = e.dataTransfer.files[0]
     if (file) handleFile(file)
-  }, [])
+  }, [mode, autoStart])
 
   const onInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -94,7 +96,7 @@ export default function Upload() {
       <div>
         <h1 className="text-xl font-bold text-zinc-900 dark:text-zinc-100">Deploy</h1>
         <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-0.5">
-          Upload a ZIP package or create a single-file MCP server in the editor
+          Upload Python, JavaScript, or TypeScript MCP packages, or create a single-file Python server
         </p>
       </div>
 
@@ -114,6 +116,18 @@ export default function Upload() {
         </button>
         <button
           type="button"
+          onClick={() => setMode('codebase')}
+          className={cn(
+            'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+            mode === 'codebase'
+              ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950'
+              : 'text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100',
+          )}
+        >
+          Codebase Upload
+        </button>
+        <button
+          type="button"
           onClick={() => setMode('editor')}
           className={cn(
             'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
@@ -127,7 +141,7 @@ export default function Upload() {
       </div>
 
       {/* Drop zone */}
-      {mode === 'zip' ? (
+      {mode === 'zip' || mode === 'codebase' ? (
         <div
           onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
           onDragLeave={() => setDragging(false)}
@@ -147,7 +161,7 @@ export default function Upload() {
           </div>
           <div className="text-center">
             <p className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
-              Drop your .zip file here
+              Drop your {mode === 'codebase' ? 'codebase' : 'package'} .zip file here
             </p>
             <p className="text-xs text-zinc-500 mt-1">or click to browse</p>
           </div>
@@ -169,6 +183,18 @@ export default function Upload() {
               {uploading ? 'Uploading…' : 'Browse files'}
             </Button>
           </div>
+          {mode === 'codebase' && (
+            <label className="flex items-center gap-2 text-xs text-zinc-600 dark:text-zinc-400">
+              <input
+                type="checkbox"
+                checked={autoStart}
+                onChange={(event) => setAutoStart(event.target.checked)}
+                aria-label="Auto-start codebase server"
+                className="h-4 w-4 rounded border-zinc-300 text-blue-600 focus:ring-blue-500"
+              />
+              Auto-start after upload and refresh dependencies on every start
+            </label>
+          )}
         </div>
       ) : (
         <Card>
@@ -288,10 +314,19 @@ export default function Upload() {
           <p>Your ZIP must contain the following files at the root:</p>
           <pre className="text-xs font-mono bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-md p-3 text-zinc-700 dark:text-zinc-300 leading-6">
 {`server.zip
-├── manifest.json     ← required
-├── requirements.txt  ← required
-└── main.py           ← your entrypoint`}
+|-- manifest.json     required
+|-- requirements.txt  Python dependencies, or pyproject.toml
+|-- package.json      JS/TS dependencies
++-- main.py           or index.js / src/index.ts entrypoint`}
           </pre>
+          <p>
+            Language is detected automatically from{' '}
+            <code className="text-blue-600 dark:text-blue-400 text-xs">manifest.language</code>,
+            the entrypoint extension, or{' '}
+            <code className="text-blue-600 dark:text-blue-400 text-xs">package.json</code>.
+            Python packages use requirements metadata; JavaScript and TypeScript packages use
+            package metadata and run through Node/npm/npx.
+          </p>
           <p>
             Minimal{' '}
             <code className="text-blue-600 dark:text-blue-400 text-xs">manifest.json</code>:
@@ -302,6 +337,14 @@ export default function Upload() {
   "version": "1.0.0",
   "entrypoint": "main.py",
   "module": "main"
+}`}
+          </pre>
+          <p>Minimal JavaScript package manifest:</p>
+          <pre className="text-xs font-mono bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-md p-3 text-zinc-700 dark:text-zinc-300 leading-6">
+{`{
+  "name": "my-node-server",
+  "version": "1.0.0",
+  "entrypoint": "index.js"
 }`}
           </pre>
           <p>

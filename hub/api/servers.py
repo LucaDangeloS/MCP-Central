@@ -14,6 +14,7 @@ from hub.api.responses import ok, paginated
 from hub.auth.admin import get_current_admin
 from hub.database import get_db
 from hub.models.server import McpServer, ServerCreate, ServerRead, ServerStatus, ServerUpdate
+from hub.models.tool_call import ToolCallCount
 from hub.process.health import get_process_manager
 
 logger = structlog.get_logger(__name__)
@@ -88,8 +89,15 @@ async def create_server(
         description=payload.description,
         path=payload.path,
         entrypoint_module=payload.entrypoint_module,
+        language=payload.language.value,
+        launch_command=payload.launch_command,
+        launch_args=json.dumps(payload.launch_args),
         env_vars=json.dumps(payload.env_vars),
+        disabled_tools=json.dumps(payload.disabled_tools),
+        manifest_tools=json.dumps(payload.manifest_tools),
         python_version_constraint=payload.python_version_constraint,
+        source_type=payload.source_type,
+        install_on_start=payload.install_on_start,
         auto_start=payload.auto_start,
         restart_on_error=payload.restart_on_error,
         group_id=payload.group_id,
@@ -125,10 +133,20 @@ async def update_server(
         server.description = payload.description
     if payload.entrypoint_module is not None:
         server.entrypoint_module = payload.entrypoint_module
+    if payload.language is not None:
+        server.language = payload.language.value
+    if payload.launch_command is not None:
+        server.launch_command = payload.launch_command
+    if payload.launch_args is not None:
+        server.launch_args = json.dumps(payload.launch_args)
     if payload.env_vars is not None:
         server.env_vars = json.dumps(payload.env_vars)
     if payload.disabled_tools is not None:
         server.disabled_tools = json.dumps(payload.disabled_tools)
+    if payload.manifest_tools is not None:
+        server.manifest_tools = json.dumps(payload.manifest_tools)
+    if payload.install_on_start is not None:
+        server.install_on_start = payload.install_on_start
     if payload.auto_start is not None:
         server.auto_start = payload.auto_start
     if payload.restart_on_error is not None:
@@ -156,9 +174,15 @@ async def list_server_tools(
     pm = get_process_manager()
     if not hasattr(pm, "_mcp_router"):
         return ok([])
-    mcp_router = pm._mcp_router  # type: ignore[attr-defined]
+    mcp_router = pm._mcp_router
     # Return un-namespaced tools so the UI sees original names + descriptions
-    tools: list[dict[str, Any]] = mcp_router._tool_registry.get(name, [])
+    tools: list[dict[str, Any]] = [dict(tool) for tool in mcp_router._tool_registry.get(name, [])]
+    counts_result = await db.execute(
+        select(ToolCallCount).where(ToolCallCount.server_name == name)
+    )
+    counts = {row.tool_name: row.call_count for row in counts_result.scalars().all()}
+    for tool in tools:
+        tool["call_count"] = counts.get(str(tool.get("name", "")), 0)
     return ok(tools)
 
 
@@ -169,9 +193,11 @@ async def delete_server(
     db: DbDep,
 ) -> None:
     server = await _get_server_or_404(db, name)
-    pm = get_process_manager()
     try:
+        pm = get_process_manager()
         await pm.stop_server(name)
+    except RuntimeError:
+        logger.warning("delete_server_process_manager_unavailable", server_name=name)
     except Exception as exc:
         import traceback
 

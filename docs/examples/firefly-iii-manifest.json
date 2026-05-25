@@ -1,0 +1,21 @@
+{
+  "name": "firefly-iii",
+  "version": "3.0.0",
+  "description": "MCP server for interacting with a Firefly III personal finance manager instance.",
+  "entrypoint": "mcp-server-firefly-iii-main/index.js",
+  "node_version": ">=18.0.0",
+  "env": {
+    "FIREFLY_URL": {
+      "description": "Base URL of your Firefly III instance, for example http://localhost:8080.",
+      "required": true,
+      "secret": false
+    },
+    "FIREFLY_TOKEN": {
+      "description": "Firefly III personal access token from Profile > OAuth > Personal Access Tokens.",
+      "required": true,
+      "secret": true
+    }
+  },
+  "capabilities": ["tools"],
+  "tags": ["finance", "firefly-iii", "javascript"]
+}
