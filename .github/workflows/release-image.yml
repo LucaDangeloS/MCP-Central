@@ -3,7 +3,9 @@ name: release-image
 on:
   push:
     tags:
-      - "v*"
+      - "v*.*.*"
+  release:
+    types: [published]
 
 permissions:
   contents: read
@@ -17,17 +19,29 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
+      - name: Validate release tag
+        id: version
+        run: |
+          if [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Compute image name
         id: image
+        if: steps.version.outputs.publish == 'true'
         run: |
           owner="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
           repo="$(echo "${{ github.event.repository.name }}" | tr '[:upper:]' '[:lower:]')"
           echo "name=ghcr.io/${owner}/${repo}" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
+        if: steps.version.outputs.publish == 'true'
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Build image
+        if: steps.version.outputs.publish == 'true'
         run: |
           docker build \
             -t "${{ steps.image.outputs.name }}:${{ github.ref_name }}" \
@@ -35,6 +49,7 @@ jobs:
             .
 
       - name: Push image
+        if: steps.version.outputs.publish == 'true'
         run: |
           docker push "${{ steps.image.outputs.name }}:${{ github.ref_name }}"
           docker push "${{ steps.image.outputs.name }}:latest"
