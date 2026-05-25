@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { serversApi, groupsApi, type Server, type Group } from '@/lib/api'
+import { configApi, serversApi, groupsApi, type Server, type Group } from '@/lib/api'
 import { Card, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge, StatusBadge } from '@/components/ui/badge'
 import { Copy, Check } from 'lucide-react'
@@ -9,10 +9,16 @@ export default function Endpoints() {
   const [groups, setGroups] = useState<Group[]>([])
   const [loading, setLoading] = useState(true)
   const [copied, setCopied] = useState<string | null>(null)
+  const [serviceUrl, setServiceUrl] = useState(window.location.origin)
 
   useEffect(() => {
-    Promise.all([serversApi.list({ page_size: 200 }), groupsApi.list()])
-      .then(([s, g]) => { setServers(s.data); setGroups(g.data); setLoading(false) })
+    Promise.all([serversApi.list({ page_size: 200 }), groupsApi.list(), configApi.get()])
+      .then(([s, g, config]) => {
+        setServers(s.data)
+        setGroups(g.data)
+        setServiceUrl(config.data.service_url)
+        setLoading(false)
+      })
       .catch(console.error)
   }, [])
 
@@ -21,8 +27,6 @@ export default function Endpoints() {
     setCopied(text)
     setTimeout(() => setCopied(null), 1500)
   }
-
-  const origin = window.location.origin
 
   if (loading) return <div className="text-zinc-500 text-sm">Loading...</div>
 
@@ -41,7 +45,7 @@ export default function Endpoints() {
           <CardTitle>Global Endpoint</CardTitle>
           <Badge variant="info">All servers</Badge>
         </CardHeader>
-        <EndpointRow url={`${origin}/mcp`} onCopy={copy} copied={copied} />
+        <EndpointRow url={`${serviceUrl}/mcp`} onCopy={copy} copied={copied} />
         <p className="text-xs text-zinc-500 mt-2">
           Use this when the AI client should discover every running server. Tools are namespaced as{' '}
           <code className="text-blue-600 dark:text-blue-400">server__tool</code>.
@@ -61,7 +65,7 @@ export default function Endpoints() {
                   <span className="text-sm text-zinc-800 dark:text-zinc-200 font-medium">{g.name}</span>
                   {g.require_api_key && <Badge variant="warning">API key required</Badge>}
                 </div>
-                <EndpointRow url={`${origin}/mcp/${g.name}`} onCopy={copy} copied={copied} />
+                <EndpointRow url={`${serviceUrl}/mcp/${g.name}`} onCopy={copy} copied={copied} />
                 <p className="mt-1 text-xs text-zinc-500">
                   Group endpoint for only the servers assigned to{' '}
                   <code className="text-blue-600 dark:text-blue-400">{g.name}</code>.
@@ -85,7 +89,7 @@ export default function Endpoints() {
                   <span className="text-sm text-zinc-800 dark:text-zinc-200 font-medium">{s.name}</span>
                   <StatusBadge status={s.status} />
                 </div>
-                <EndpointRow url={`${origin}/mcp/server/${s.name}`} onCopy={copy} copied={copied} />
+                <EndpointRow url={`${serviceUrl}/mcp/server/${s.name}`} onCopy={copy} copied={copied} />
                 <p className="mt-1 text-xs text-zinc-500">
                   Direct endpoint for this server only. Use it when an AI should see just this server's tools.
                 </p>
@@ -104,7 +108,7 @@ export default function Endpoints() {
 {`{
   "mcpServers": {
     "mcp-central": {
-      "url": "${origin}/mcp"
+      "url": "${serviceUrl}/mcp"
     }
   }
 }`}

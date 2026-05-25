@@ -9,10 +9,10 @@ from typing import Any
 import structlog
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from hub.api import auth, groups, keys, logs, servers, stats, upload
+from hub.api import auth, config, groups, keys, logs, servers, stats, upload
 from hub.config import get_settings
 from hub.database import AsyncSessionLocal, init_db
 from hub.logging_setup import configure_logging
@@ -80,10 +80,9 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="MCP Central",
         description=(
-            "A self-hosted MCP Server hub with management UI, sandboxing, "
-            "and unified endpoint."
+            "A self-hosted MCP Server hub with management UI, sandboxing, and unified endpoint."
         ),
-        version="0.1.0",
+        version="0.1.1",
         lifespan=lifespan,
         docs_url="/api/docs",
         redoc_url="/api/redoc",
@@ -137,6 +136,7 @@ def create_app() -> FastAPI:
     # ------------------------------------------------------------------ #
     prefix = "/api/v1"
     app.include_router(stats.router, prefix=prefix)
+    app.include_router(config.router, prefix=prefix)
     app.include_router(auth.router, prefix=prefix)
     app.include_router(servers.router, prefix=prefix)
     app.include_router(groups.router, prefix=prefix)
@@ -167,8 +167,6 @@ def create_app() -> FastAPI:
 
     _frontend_dist = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
     if os.path.isdir(_frontend_dist):
-        from fastapi.responses import FileResponse
-
         # Serve static assets (JS, CSS, images, etc.)
         app.mount(
             "/assets",
@@ -178,7 +176,7 @@ def create_app() -> FastAPI:
 
         # Serve any other static files at the root (like favicon) if they exist
         @app.get("/{file_path:path}", include_in_schema=False)
-        async def _serve_spa(file_path: str):
+        async def _serve_spa(file_path: str) -> FileResponse:
             full_path = os.path.join(_frontend_dist, file_path)
             if os.path.isfile(full_path):
                 return FileResponse(full_path)

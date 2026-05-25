@@ -9,6 +9,7 @@ Endpoints mounted by this router:
 
 All requests share the same JSON-RPC 2.0 framing.
 """
+
 from __future__ import annotations
 
 import json
@@ -24,6 +25,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from hub.auth.api_keys import hash_key
+from hub.config import get_settings
 from hub.database import get_db
 from hub.mcp.router import McpRouter, _jsonrpc_error
 from hub.models.api_key import ApiKey
@@ -178,13 +180,11 @@ def create_mcp_router() -> APIRouter:
             # hidden_tools set, converting each to its namespaced form.
             all_hidden = list(hidden_tools)
             from hub.mcp.namespace import namespace_tool_name
+
             scope = (
-                server_names if server_names is not None
-                else list(mcp_router._tool_registry.keys())
+                server_names if server_names is not None else list(mcp_router._tool_registry.keys())
             )
-            srv_result = await db.execute(
-                select(McpServer).where(McpServer.name.in_(scope))
-            )
+            srv_result = await db.execute(select(McpServer).where(McpServer.name.in_(scope)))
             for srv in srv_result.scalars().all():
                 disabled: list[str] = _json.loads(srv.disabled_tools)
                 for disabled_tool_name in disabled:
@@ -222,7 +222,7 @@ def create_mcp_router() -> APIRouter:
                 "result": {
                     "protocolVersion": _MCP_PROTOCOL_VERSION,
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "MCP Central Hub", "version": "0.1.0"},
+                    "serverInfo": {"name": "MCP Central Hub", "version": "0.1.1"},
                 },
             }
 
@@ -265,9 +265,7 @@ def create_mcp_router() -> APIRouter:
     ) -> Response:
         _validate_origin(request)
         # Load the group
-        result = await db.execute(
-            select(Group).where(Group.name == group_name)
-        )
+        result = await db.execute(select(Group).where(Group.name == group_name))
         group = result.scalar_one_or_none()
         if group is None:
             raise HTTPException(status_code=404, detail=f"Group '{group_name}' not found")
@@ -284,6 +282,7 @@ def create_mcp_router() -> APIRouter:
         server_names = [s.name for s in srv_result.scalars().all()]
 
         import json as _json
+
         hidden_tools: list[str] = _json.loads(group.hidden_tools)
 
         return await _handle_request(
@@ -313,9 +312,7 @@ def create_mcp_router() -> APIRouter:
         api_key_required = await _server_endpoint_requires_key(db, server)
         await _validate_server_key(db, request, server, api_key_required)
 
-        return await _handle_request(
-            request, server_names=[server_name], hidden_tools=[], db=db
-        )
+        return await _handle_request(request, server_names=[server_name], hidden_tools=[], db=db)
 
     @router.get("/{group_name}", summary="MCP SSE stream scoped to a group")
     async def mcp_group_stream(
@@ -467,7 +464,7 @@ def _extract_api_key(request: Request) -> str | None:
 
 async def _build_discovery_document(request: Request, db: AsyncSession) -> dict[str, Any]:
     """Return a public capability document designed for agent bootstrapping."""
-    base_url = str(request.base_url).rstrip("/")
+    base_url = _external_base_url(request)
     mcp_router = _try_get_registered_mcp_router()
     server_result = await db.execute(select(McpServer))
     servers = server_result.scalars().all()
@@ -586,6 +583,11 @@ async def _build_discovery_document(request: Request, db: AsyncSession) -> dict[
         "groups": group_entries,
         "servers": server_entries,
     }
+
+
+def _external_base_url(request: Request) -> str:
+    settings = get_settings()
+    return settings.service_url or str(request.base_url).rstrip("/")
 
 
 def _try_get_registered_mcp_router() -> McpRouter | None:

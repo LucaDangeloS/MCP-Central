@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     # Core                                                                 #
     # ------------------------------------------------------------------ #
     hub_port: int = Field(default=8000, description="Port the hub listens on")
+    service_url: str = Field(
+        default="",
+        description="Canonical externally reachable URL for examples and endpoint listings",
+    )
     debug: bool = Field(default=False, description="Enable debug mode (verbose logging)")
     secret_key: str = Field(
         default="CHANGE_ME_IN_PRODUCTION_USE_A_LONG_RANDOM_STRING",
@@ -36,7 +40,7 @@ class Settings(BaseSettings):
         description="Admin UI password (hashed at first start)",
     )
     jwt_algorithm: str = Field(default="HS256")
-    access_token_expire_minutes: int = Field(default=60 * 24)      # 24 h
+    access_token_expire_minutes: int = Field(default=60 * 24)  # 24 h
     refresh_token_expire_minutes: int = Field(default=60 * 24 * 7)  # 7 days
 
     # ------------------------------------------------------------------ #
@@ -112,6 +116,14 @@ class Settings(BaseSettings):
         le=128,
         description="Maximum size of one stdout/stderr line from an MCP server process (MB)",
     )
+
+    @field_validator("service_url")
+    @classmethod
+    def normalize_service_url(cls, value: str) -> str:
+        value = value.strip().rstrip("/")
+        if value and not value.startswith(("http://", "https://")):
+            raise ValueError("SERVICE_URL must start with http:// or https://")
+        return value
 
 
 @lru_cache

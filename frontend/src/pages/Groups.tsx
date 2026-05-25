@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { groupsApi, serversApi, type Group, type Server } from '@/lib/api'
+import { configApi, groupsApi, serversApi, type Group, type Server } from '@/lib/api'
 import { Card, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -17,14 +17,17 @@ export default function Groups() {
   const [requireKey, setRequireKey] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [editingGroup, setEditingGroup] = useState<Group | null>(null)
+  const [serviceUrl, setServiceUrl] = useState(window.location.origin)
 
   const load = async () => {
-    const [groupResp, serverResp] = await Promise.all([
+    const [groupResp, serverResp, configResp] = await Promise.all([
       groupsApi.list(),
       serversApi.list({ page_size: 200 }),
+      configApi.get(),
     ])
     setGroups(groupResp.data)
     setServers(serverResp.data)
+    setServiceUrl(configResp.data.service_url)
     setLoading(false)
   }
 
@@ -150,7 +153,7 @@ export default function Groups() {
                   )}
                   <div className="mt-2 text-xs text-zinc-500">
                     MCP endpoint:{' '}
-                    <code className="text-blue-600 dark:text-blue-400 font-mono">/mcp/{g.name}</code>
+                    <code className="text-blue-600 dark:text-blue-400 font-mono">{serviceUrl}/mcp/{g.name}</code>
                   </div>
                   <div className="mt-3 space-y-2">
                     <div className="text-xs font-medium text-zinc-600 dark:text-zinc-400">MCP servers</div>

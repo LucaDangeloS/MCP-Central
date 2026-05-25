@@ -639,7 +639,7 @@ class ProcessManager:
                 "params": {
                     "protocolVersion": "2025-03-26",
                     "capabilities": {},
-                    "clientInfo": {"name": "MCP Central", "version": "0.1.0"},
+                    "clientInfo": {"name": "MCP Central", "version": "0.1.1"},
                 },
             }
         )

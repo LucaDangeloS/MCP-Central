@@ -1,5 +1,5 @@
-import { useCallback, useState } from 'react'
-import { uploadApi, type Server } from '@/lib/api'
+import { useCallback, useEffect, useState } from 'react'
+import { configApi, uploadApi, type Server } from '@/lib/api'
 import { Card, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { StatusBadge } from '@/components/ui/badge'
@@ -28,6 +28,13 @@ export default function Upload() {
   const [code, setCode] = useState(DEFAULT_SERVER_CODE)
   const [requirements, setRequirements] = useState('# no requirements\n')
   const [autoStart, setAutoStart] = useState(true)
+  const [serviceUrl, setServiceUrl] = useState(window.location.origin)
+
+  useEffect(() => {
+    configApi.get()
+      .then((resp) => setServiceUrl(resp.data.service_url))
+      .catch(console.error)
+  }, [])
 
   const handleFile = async (file: File) => {
     if (!file.name.endsWith('.zip')) {
@@ -299,7 +306,7 @@ export default function Upload() {
             </div>
             <div className="mt-2 text-xs text-emerald-600 dark:text-emerald-400">
               MCP endpoint:{' '}
-              <code className="font-mono">/mcp/server/{result.server.name}</code>
+              <code className="font-mono">{serviceUrl}/mcp/server/{result.server.name}</code>
             </div>
           </div>
         </div>

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { groupsApi, logsApi, serversApi, type Group, type McpTool, type Server } from '@/lib/api'
+import { configApi, groupsApi, logsApi, serversApi, type Group, type McpTool, type Server } from '@/lib/api'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Select } from '@/components/ui/select'
@@ -25,14 +25,17 @@ export default function Servers() {
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [editingServer, setEditingServer] = useState<Server | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [serviceUrl, setServiceUrl] = useState(window.location.origin)
 
   const load = async () => {
-    const [serverResp, groupResp] = await Promise.all([
+    const [serverResp, groupResp, configResp] = await Promise.all([
       serversApi.list({ page_size: 200 }),
       groupsApi.list(),
+      configApi.get(),
     ])
     setServers(serverResp.data)
     setGroups(groupResp.data)
+    setServiceUrl(configResp.data.service_url)
     setLoading(false)
   }
 
@@ -121,7 +124,7 @@ export default function Servers() {
                     )}
                     <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs">
                       <code className="rounded bg-zinc-100 dark:bg-zinc-900 px-1.5 py-0.5 font-mono text-blue-600 dark:text-blue-300 border border-zinc-200 dark:border-transparent">
-                        /mcp/server/{server.name}
+                        {serviceUrl}/mcp/server/{server.name}
                       </code>
                       {server.group_id && (
                         <span className="text-zinc-500">

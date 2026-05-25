@@ -18,6 +18,7 @@ services:
     environment:
       # ---- Core ----
       HUB_PORT: "${HUB_PORT:-8000}"
+      SERVICE_URL: "${SERVICE_URL:-}"
       DEBUG: "${DEBUG:-false}"
       SECRET_KEY: "${SECRET_KEY:?SECRET_KEY must be set in .env}"
       TZ: "${TZ:-Europe/Madrid}"

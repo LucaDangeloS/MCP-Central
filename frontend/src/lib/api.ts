@@ -113,6 +113,10 @@ export interface Stats {
   }
 }
 
+export interface RuntimeConfig {
+  service_url: string
+}
+
 // ------------------------------------------------------------------ //
 // Auth                                                                 //
 // ------------------------------------------------------------------ //
@@ -271,6 +275,14 @@ export const logsApi = {
 
 export const statsApi = {
   get: () => request<ApiResponse<Stats>>('/stats'),
+}
+
+// ------------------------------------------------------------------ //
+// Runtime config                                                       //
+// ------------------------------------------------------------------ //
+
+export const configApi = {
+  get: () => request<ApiResponse<RuntimeConfig>>('/config'),
 }
 
 // ------------------------------------------------------------------ //

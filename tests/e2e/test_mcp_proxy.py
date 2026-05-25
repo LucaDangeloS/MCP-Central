@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from httpx import AsyncClient
@@ -112,6 +113,7 @@ class TestMcpRouter:
     async def test_route_tools_call_error_includes_traceback(self) -> None:
         """When a server raises, the error response must include the full traceback."""
         from unittest.mock import AsyncMock
+
         pm = MagicMock()
         pm.list_running.return_value = ["server-a"]
         pm.send_jsonrpc = AsyncMock(side_effect=RuntimeError("server exploded"))
@@ -265,6 +267,23 @@ class TestMcpHttpEndpoints:
         assert body["servers"][0]["name"] == "discover-srv"
         assert body["servers"][0]["auth_required"] is False
         assert body["servers"][0]["tools"][0]["name"] == "discover-srv__search"
+
+    async def test_public_discovery_uses_configured_service_url(
+        self,
+        client: AsyncClient,
+    ) -> None:
+        with patch(
+            "hub.mcp.proxy.get_settings",
+            return_value=SimpleNamespace(service_url="https://mcp.example.test"),
+        ):
+            resp = await client.get("/.well-known/mcp-central.json")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["endpoints"]["discovery"] == (
+            "https://mcp.example.test/.well-known/mcp-central.json"
+        )
+        assert body["endpoints"]["global"]["url"] == "https://mcp.example.test/mcp"
 
     async def test_global_endpoint_filters_keyed_servers_without_key(
         self,

@@ -49,6 +49,8 @@ http://localhost:8000
 ```
 
 If you set `HUB_PORT` in `.env`, use that port instead.
+Set `SERVICE_URL` when MCP Central is exposed through a reverse proxy, tunnel, or custom domain;
+the UI endpoint page and public discovery examples will use that URL.
 
 5. Check health:
 
@@ -66,6 +68,7 @@ Configuration is controlled through `.env`; there is only one `docker-compose.ym
 | `ADMIN_USERNAME` | `admin` | Admin login username. |
 | `ADMIN_PASSWORD` | required | Admin login password. |
 | `HUB_PORT` | `8000` | Host port mapped to the hub container's internal port `8000`. |
+| `SERVICE_URL` | request URL | Canonical externally reachable URL used in generated endpoints and examples. |
 | `DEBUG` | `false` | Enables debug logging. |
 | `TZ` | `Europe/Madrid` | Container timezone. |
 | `PROXY_PORT` | `8888` | Internal tinyproxy port used for MCP server egress. |
