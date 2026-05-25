@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
 import structlog
@@ -15,6 +15,7 @@ from hub.auth.admin import get_current_admin
 from hub.database import get_db
 from hub.models.log_entry import LogEntry, LogLevel
 from hub.models.server import McpServer, ServerStatus
+from hub.models.tool_call import ToolCallCount
 
 logger = structlog.get_logger(__name__)
 
@@ -35,7 +36,10 @@ async def get_stats(
         
         .group_by(McpServer.status)
     )
-    status_counts: dict[str, int] = {row.status: row.count for row in status_counts_result}
+    status_counts: dict[str, int] = {
+        str(status): int(count)
+        for status, count in status_counts_result.all()
+    }
 
     total_servers = sum(status_counts.values())
     running_servers = status_counts.get(ServerStatus.running.value, 0)
@@ -43,7 +47,7 @@ async def get_stats(
     stopped_servers = status_counts.get(ServerStatus.stopped.value, 0)
 
     # Error log count in last hour
-    one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
+    one_hour_ago = datetime.now(UTC) - timedelta(hours=1)
     error_count_result = await db.execute(
         select(func.count())
         .select_from(LogEntry)
@@ -55,13 +59,26 @@ async def get_stats(
     errors_last_hour = error_count_result.scalar_one()
 
     # Total log lines per server (last 24h)
-    since_24h = datetime.now(timezone.utc) - timedelta(hours=24)
+    since_24h = datetime.now(UTC) - timedelta(hours=24)
     log_activity_result = await db.execute(
         select(LogEntry.server_name, func.count().label("count"))
         .where(LogEntry.timestamp >= since_24h)
         .group_by(LogEntry.server_name)
     )
-    log_activity = {row.server_name: row.count for row in log_activity_result}
+    log_activity = {
+        str(server_name): int(count)
+        for server_name, count in log_activity_result.all()
+    }
+
+    tool_call_result = await db.execute(
+        select(ToolCallCount.server_name, func.sum(ToolCallCount.call_count).label("count"))
+        .group_by(ToolCallCount.server_name)
+        .order_by(func.sum(ToolCallCount.call_count).desc())
+    )
+    tool_calls_by_server = {
+        str(server_name): int(count or 0)
+        for server_name, count in tool_call_result.all()
+    }
 
     return ok(
         {
@@ -76,6 +93,10 @@ async def get_stats(
                 "errors_last_hour": errors_last_hour,
                 "activity_last_24h": log_activity,
             },
+            "tools": {
+                "calls_by_server": tool_calls_by_server,
+                "total_calls": sum(tool_calls_by_server.values()),
+            },
         }
     )
 
@@ -83,4 +104,4 @@ async def get_stats(
 @router.get("/health", summary="Hub health check (no auth required)", include_in_schema=True)
 async def health_check() -> dict[str, Any]:
     """Lightweight health probe used by Docker's healthcheck and load balancers."""
-    return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
+    return {"status": "ok", "timestamp": datetime.now(UTC).isoformat()}

@@ -43,6 +43,10 @@ export default function Dashboard() {
     name: name.length > 12 ? name.slice(0, 12) + '…' : name,
     logs: count,
   }))
+  const toolCallData = Object.entries(stats?.tools.calls_by_server ?? {}).map(([name, count]) => ({
+    name: name.length > 14 ? name.slice(0, 14) + '...' : name,
+    calls: count,
+  }))
 
   // Theme-aware chart colours
   const tickColor = isDark ? '#71717a' : '#52525b'
@@ -63,7 +67,53 @@ export default function Dashboard() {
         <StatCard icon={ServerIcon} label="Total Servers" value={stats?.servers.total ?? 0} color="blue" />
         <StatCard icon={Activity} label="Running" value={stats?.servers.running ?? 0} color="emerald" />
         <StatCard icon={AlertTriangle} label="Errors" value={stats?.servers.error ?? 0} color="red" />
-        <StatCard icon={Clock} label="Errors (1h)" value={stats?.logs.errors_last_hour ?? 0} color="amber" />
+        <StatCard icon={Clock} label="Tool Calls" value={stats?.tools.total_calls ?? 0} color="amber" />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Tool calls chart */}
+        <Card className="lg:col-span-2">
+          <CardHeader>
+            <CardTitle>Tool Calls by Server</CardTitle>
+          </CardHeader>
+          {toolCallData.length === 0 ? (
+            <p className="text-sm text-zinc-500 dark:text-zinc-500">No tool calls recorded yet.</p>
+          ) : (
+            <ResponsiveContainer width="100%" height={180}>
+              <BarChart data={toolCallData} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
+                <XAxis dataKey="name" tick={{ fontSize: 11, fill: tickColor }} />
+                <YAxis tick={{ fontSize: 11, fill: tickColor }} allowDecimals={false} />
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: tooltipBg,
+                    border: `1px solid ${tooltipBorder}`,
+                    borderRadius: 8,
+                    boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
+                  }}
+                  labelStyle={{ color: tooltipLabel, fontSize: 12 }}
+                  itemStyle={{ color: tooltipItem, fontSize: 12 }}
+                />
+                <Bar dataKey="calls" fill="#8b5cf6" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Errors</CardTitle>
+          </CardHeader>
+          <div className="flex h-[180px] items-center justify-center">
+            <div className="text-center">
+              <div className="text-4xl font-bold text-zinc-900 dark:text-zinc-100">
+                {stats?.logs.errors_last_hour ?? 0}
+              </div>
+              <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                errors in the last hour
+              </div>
+            </div>
+          </div>
+        </Card>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -100,7 +150,7 @@ export default function Dashboard() {
           <CardHeader>
             <CardTitle>Recent Errors</CardTitle>
           </CardHeader>
-          <div className="space-y-2 overflow-y-auto max-h-52">
+          <div className="app-scrollbar space-y-2 overflow-y-auto overscroll-contain max-h-52 pr-1">
             {logs.length === 0 ? (
               <p className="text-sm text-zinc-500">No recent errors.</p>
             ) : (

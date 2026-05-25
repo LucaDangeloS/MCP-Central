@@ -14,6 +14,7 @@ from hub.api.responses import ok, paginated
 from hub.auth.admin import get_current_admin
 from hub.database import get_db
 from hub.models.server import McpServer, ServerCreate, ServerRead, ServerStatus, ServerUpdate
+from hub.models.tool_call import ToolCallCount
 from hub.process.health import get_process_manager
 
 logger = structlog.get_logger(__name__)
@@ -175,7 +176,13 @@ async def list_server_tools(
         return ok([])
     mcp_router = pm._mcp_router
     # Return un-namespaced tools so the UI sees original names + descriptions
-    tools: list[dict[str, Any]] = mcp_router._tool_registry.get(name, [])
+    tools: list[dict[str, Any]] = [dict(tool) for tool in mcp_router._tool_registry.get(name, [])]
+    counts_result = await db.execute(
+        select(ToolCallCount).where(ToolCallCount.server_name == name)
+    )
+    counts = {row.tool_name: row.call_count for row in counts_result.scalars().all()}
+    for tool in tools:
+        tool["call_count"] = counts.get(str(tool.get("name", "")), 0)
     return ok(tools)
 
 

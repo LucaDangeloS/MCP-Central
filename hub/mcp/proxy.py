@@ -210,7 +210,7 @@ def create_mcp_router() -> APIRouter:
                         code=-32602,
                         message=f"Tool '{tool_name}' is not accessible on this endpoint.",
                     )
-            return await mcp_router.route_tools_call(tool_name, arguments, req_id)
+            return await mcp_router.route_tools_call(tool_name, arguments, req_id, db)
 
         if method == "ping":
             return {"jsonrpc": "2.0", "id": req_id, "result": {}}

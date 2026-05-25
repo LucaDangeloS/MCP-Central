@@ -4,5 +4,6 @@ from hub.models.api_key import ApiKey
 from hub.models.group import Group
 from hub.models.log_entry import LogEntry
 from hub.models.server import McpServer
+from hub.models.tool_call import ToolCallCount
 
-__all__ = ["ApiKey", "Group", "LogEntry", "McpServer"]
+__all__ = ["ApiKey", "Group", "LogEntry", "McpServer", "ToolCallCount"]

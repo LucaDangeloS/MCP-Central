@@ -27,6 +27,9 @@ export interface Server {
   description: string
   path: string
   entrypoint_module: string
+  language: 'python' | 'javascript' | 'typescript'
+  launch_command: string
+  launch_args: string[]
   env_vars: Record<string, string>
   disabled_tools: string[]
   manifest_tools: McpTool[]
@@ -48,6 +51,7 @@ export interface Server {
 export interface McpTool {
   name: string
   description?: string
+  call_count?: number
   inputSchema?: {
     type: string
     properties?: Record<string, { type?: string; description?: string }>
@@ -102,6 +106,10 @@ export interface Stats {
   logs: {
     errors_last_hour: number
     activity_last_24h: Record<string, number>
+  }
+  tools: {
+    total_calls: number
+    calls_by_server: Record<string, number>
   }
 }
 
@@ -193,9 +201,9 @@ export const serversApi = {
     return request<ApiResponse<Server[]>>(`/servers?${q}`)
   },
   get: (name: string) => request<ApiResponse<Server>>(`/servers/${name}`),
-  create: (data: { name: string; path: string; description?: string; entrypoint_module?: string; auto_start?: boolean; restart_on_error?: boolean; group_id?: number; env_vars?: Record<string, string> }) =>
+  create: (data: { name: string; path: string; description?: string; entrypoint_module?: string; language?: Server['language']; launch_command?: string; launch_args?: string[]; auto_start?: boolean; restart_on_error?: boolean; group_id?: number; env_vars?: Record<string, string> }) =>
     request<ApiResponse<Server>>('/servers', { method: 'POST', body: JSON.stringify(data) }),
-  update: (name: string, data: Partial<Pick<Server, 'description' | 'entrypoint_module' | 'env_vars' | 'disabled_tools' | 'auto_start' | 'restart_on_error' | 'group_id'>>) =>
+  update: (name: string, data: Partial<Pick<Server, 'description' | 'entrypoint_module' | 'language' | 'launch_command' | 'launch_args' | 'env_vars' | 'disabled_tools' | 'auto_start' | 'restart_on_error' | 'group_id'>>) =>
     request<ApiResponse<Server>>(`/servers/${name}`, { method: 'PATCH', body: JSON.stringify(data) }),
   delete: (name: string) => request<void>(`/servers/${name}`, { method: 'DELETE' }),
   start: (name: string) => request<ApiResponse<Server>>(`/servers/${name}/start`, { method: 'POST' }),
