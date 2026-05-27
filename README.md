@@ -113,3 +113,7 @@ pnpm build
 ```
 
 Do not commit `.env`, database files, deployed server packages, virtual environments, `node_modules`, caches, or build artifacts.
+
+## License
+
+MCP Central is licensed under the MIT License. See [LICENSE](LICENSE) for details.
