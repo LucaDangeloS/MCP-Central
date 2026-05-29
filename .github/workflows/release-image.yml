@@ -2,8 +2,6 @@ name: release-image
 
 on:
   push:
-    tags:
-      - "v*.*.*"
   release:
     types: [published]
 
@@ -19,37 +17,38 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Validate release tag
-        id: version
+      - name: Compute image tags
+        id: tags
         run: |
-          if [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "publish=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "publish=false" >> "$GITHUB_OUTPUT"
+          ref_tag="$(echo "${GITHUB_REF_NAME}" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed -E 's/[^a-z0-9_.-]+/-/g; s/^-+//; s/-+$//')"
+          if [[ -z "$ref_tag" ]]; then
+            ref_tag="${GITHUB_SHA::12}"
           fi
+          echo "ref_tag=${ref_tag}" >> "$GITHUB_OUTPUT"
+          echo "sha_tag=sha-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
 
       - name: Compute image name
         id: image
-        if: steps.version.outputs.publish == 'true'
         run: |
           owner="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
           repo="$(echo "${{ github.event.repository.name }}" | tr '[:upper:]' '[:lower:]')"
           echo "name=ghcr.io/${owner}/${repo}" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
-        if: steps.version.outputs.publish == 'true'
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Build image
-        if: steps.version.outputs.publish == 'true'
         run: |
           docker build \
-            -t "${{ steps.image.outputs.name }}:${{ github.ref_name }}" \
+            -t "${{ steps.image.outputs.name }}:${{ steps.tags.outputs.ref_tag }}" \
+            -t "${{ steps.image.outputs.name }}:${{ steps.tags.outputs.sha_tag }}" \
             -t "${{ steps.image.outputs.name }}:latest" \
             .
 
       - name: Push image
-        if: steps.version.outputs.publish == 'true'
         run: |
-          docker push "${{ steps.image.outputs.name }}:${{ github.ref_name }}"
+          docker push "${{ steps.image.outputs.name }}:${{ steps.tags.outputs.ref_tag }}"
+          docker push "${{ steps.image.outputs.name }}:${{ steps.tags.outputs.sha_tag }}"
           docker push "${{ steps.image.outputs.name }}:latest"
