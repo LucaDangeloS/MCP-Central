@@ -16,6 +16,21 @@ def main():
     raise RuntimeError("Replace the editor template with your MCP server code.")
 `
 
+const DEFAULT_MANIFEST = JSON.stringify(
+  {
+    name: 'my-server',
+    version: '1.0.0',
+    description: '',
+    entrypoint: 'main.py',
+    module: 'main',
+    language: 'python',
+    env: {},
+    tools: [],
+  },
+  null,
+  2,
+)
+
 export default function Upload() {
   const [dragging, setDragging] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -26,6 +41,7 @@ export default function Upload() {
   const [serverName, setServerName] = useState('')
   const [description, setDescription] = useState('')
   const [code, setCode] = useState(DEFAULT_SERVER_CODE)
+  const [manifestJson, setManifestJson] = useState(DEFAULT_MANIFEST)
   const [requirements, setRequirements] = useState('# no requirements\n')
   const [autoStart, setAutoStart] = useState(true)
   const [serviceUrl, setServiceUrl] = useState(window.location.origin)
@@ -81,6 +97,23 @@ export default function Upload() {
       return
     }
 
+    let manifest: Record<string, unknown>
+    try {
+      const parsed = JSON.parse(manifestJson) as unknown
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        setError('manifest.json must be a JSON object.')
+        return
+      }
+      manifest = parsed as Record<string, unknown>
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? `manifest.json is not valid JSON: ${err.message}`
+          : 'manifest.json is not valid JSON.',
+      )
+      return
+    }
+
     setCreating(true)
     try {
       const resp = await uploadApi.createSingleFile({
@@ -88,6 +121,7 @@ export default function Upload() {
         description,
         code,
         requirements,
+        manifest,
         auto_start: autoStart,
       })
       setResult({ server: resp.data.server, message: resp.data.message })
@@ -242,6 +276,19 @@ export default function Upload() {
                 spellCheck={false}
                 className="min-h-80 w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950 px-4 py-3 font-mono text-sm leading-6 text-zinc-800 dark:text-zinc-100 outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
                 aria-label="Single-file MCP server Python code"
+              />
+            </label>
+
+            <label className="block space-y-1.5">
+              <span className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
+                manifest.json
+              </span>
+              <textarea
+                value={manifestJson}
+                onChange={(event) => setManifestJson(event.target.value)}
+                spellCheck={false}
+                className="min-h-56 w-full rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 px-3 py-2 font-mono text-sm text-zinc-900 dark:text-zinc-100 outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
+                aria-label="Single-file server manifest JSON"
               />
             </label>
 

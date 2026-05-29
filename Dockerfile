@@ -32,6 +32,7 @@ RUN pip install --no-cache-dir uv
 
 # Copy project metadata only first (cache layer)
 COPY pyproject.toml ./
+COPY LICENSE ./
 
 # Install all production dependencies into a venv
 RUN uv venv /build/.venv --python python3.12 && \

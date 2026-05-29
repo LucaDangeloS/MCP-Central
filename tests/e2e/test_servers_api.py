@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from httpx import AsyncClient
@@ -70,6 +71,28 @@ class TestServerLifecycleActions:
 
         get_resp = await client.get("/api/v1/servers/delete-me", headers=auth_headers)
         assert get_resp.status_code == 404
+
+    async def test_delete_server_removes_files(
+        self, client: AsyncClient, auth_headers: dict[str, str], tmp_path
+    ) -> None:
+        import hub.config as cfg
+
+        os.environ["SERVERS_DIR"] = str(tmp_path)
+        cfg.get_settings.cache_clear()
+        server_dir = tmp_path / "delete-files"
+        server_dir.mkdir()
+        (server_dir / "main.py").write_text("def main():\n    pass\n", encoding="utf-8")
+        await self._create_server(client, auth_headers, "delete-files")
+
+        mock_pm = MagicMock()
+        mock_pm.stop_server = AsyncMock()
+        with patch("hub.api.servers.get_process_manager", return_value=mock_pm):
+            resp = await client.delete("/api/v1/servers/delete-files", headers=auth_headers)
+
+        assert resp.status_code == 204
+        assert not server_dir.exists()
+
+        cfg.get_settings.cache_clear()
 
     async def test_update_server_runtime_parameters(
         self, client: AsyncClient, auth_headers: dict[str, str]

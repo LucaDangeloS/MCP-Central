@@ -329,6 +329,7 @@ export const uploadApi = {
     description?: string
     code: string
     requirements?: string
+    manifest?: Record<string, unknown>
     env_vars?: Record<string, string>
     auto_start?: boolean
   }) => request<ApiResponse<{ server: Server; manifest: Record<string, unknown>; message: string }>>(

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import shutil
 from typing import Annotated, Any
 
 import structlog
@@ -12,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from hub.api.responses import ok, paginated
 from hub.auth.admin import get_current_admin
+from hub.config import get_settings
 from hub.database import get_db
 from hub.models.server import McpServer, ServerCreate, ServerRead, ServerStatus, ServerUpdate
 from hub.models.tool_call import ToolCallCount
@@ -193,6 +196,16 @@ async def delete_server(
     db: DbDep,
 ) -> None:
     server = await _get_server_or_404(db, name)
+    settings = get_settings()
+    servers_root = settings.servers_dir.resolve()
+    server_dir = (servers_root / server.path).resolve()
+    try:
+        server_dir.relative_to(servers_root)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Refusing to delete server directory outside servers root: {server.path}",
+        ) from exc
     try:
         pm = get_process_manager()
         await pm.stop_server(name)
@@ -208,8 +221,21 @@ async def delete_server(
                 "traceback": traceback.format_exc(),
             },
         ) from exc
+    try:
+        if await asyncio.to_thread(server_dir.exists):
+            await asyncio.to_thread(shutil.rmtree, server_dir)
+    except Exception as exc:
+        import traceback
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "message": f"Failed to delete server files for '{name}': {exc}",
+                "traceback": traceback.format_exc(),
+            },
+        ) from exc
     await db.delete(server)
-    logger.info("server_deleted", server_name=server.name)
+    logger.info("server_deleted", server_name=server.name, server_dir=str(server_dir))
 
 
 # ------------------------------------------------------------------ #

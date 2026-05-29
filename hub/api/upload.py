@@ -49,6 +49,7 @@ class SingleFileServerCreate(BaseModel):
     description: str = Field(default="", max_length=500)
     code: str = Field(..., min_length=1, max_length=200_000)
     requirements: str = Field(default="# no requirements\n", max_length=50_000)
+    manifest: dict[str, Any] | None = None
     env_vars: dict[str, str] = Field(default_factory=dict)
     auto_start: bool = True
 
@@ -220,11 +221,16 @@ async def _write_single_file_package(
     target_dir: Path,
     code: str,
     requirements: str,
+    manifest: dict[str, Any],
 ) -> None:
     def _write() -> None:
         target_dir.mkdir(parents=True, exist_ok=False)
         (target_dir / "main.py").write_text(code, encoding="utf-8")
         (target_dir / "requirements.txt").write_text(requirements, encoding="utf-8")
+        (target_dir / "manifest.json").write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
 
     try:
         await asyncio.to_thread(_write)
@@ -638,6 +644,30 @@ async def create_single_file_server(
     settings = get_settings()
     server_name = payload.name
     target_dir = settings.servers_dir / server_name
+    manifest = {
+        "name": server_name,
+        "version": "1.0.0",
+        "description": payload.description,
+        "entrypoint": "main.py",
+        "module": "main",
+        "language": ServerLanguage.python.value,
+        "env": {key: {} for key in payload.env_vars},
+        "tools": [],
+        **(payload.manifest or {}),
+    }
+    manifest["name"] = server_name
+    manifest["description"] = payload.description
+    manifest["entrypoint"] = "main.py"
+    manifest["module"] = str(manifest.get("module") or "main")
+    manifest["language"] = ServerLanguage.python.value
+
+    validation_errors = _validate_manifest(manifest)
+    if validation_errors:
+        raise HTTPException(status_code=422, detail={"errors": validation_errors})
+
+    module_name = _entrypoint_module(manifest, ServerLanguage.python)
+    manifest_tools = _manifest_tools(manifest)
+    env_vars = {**_env_defaults_from_manifest(manifest), **payload.env_vars}
 
     existing = await db.execute(
         select(McpServer).where(McpServer.name == server_name)
@@ -658,34 +688,24 @@ async def create_single_file_server(
         )
 
     try:
-        await _write_single_file_package(target_dir, payload.code, payload.requirements)
+        await _write_single_file_package(target_dir, payload.code, payload.requirements, manifest)
     except Exception as exc:
         raise HTTPException(
             status_code=500,
             detail=f"Failed to write single-file server package '{server_name}': {exc}",
         ) from exc
 
-    manifest = {
-        "name": server_name,
-        "version": "1.0.0",
-        "description": payload.description,
-        "entrypoint": "main.py",
-        "module": "main",
-        "env": {key: {} for key in payload.env_vars},
-        "tools": [],
-    }
-
     server = McpServer(
         name=server_name,
         description=payload.description,
         path=server_name,
-        entrypoint_module="main",
+        entrypoint_module=module_name,
         language=ServerLanguage.python.value,
         launch_command="",
         launch_args="[]",
-        env_vars=json.dumps(payload.env_vars),
-        manifest_tools="[]",
-        python_version_constraint="",
+        env_vars=json.dumps(env_vars),
+        manifest_tools=json.dumps(manifest_tools),
+        python_version_constraint=manifest.get("python_version", ""),
         source_type="single_file",
         install_on_start=False,
         auto_start=payload.auto_start,

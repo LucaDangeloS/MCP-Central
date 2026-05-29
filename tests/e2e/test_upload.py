@@ -300,6 +300,11 @@ class TestSingleFileServerCreation:
                 "description": "Created from editor",
                 "code": "def main():\n    pass\n",
                 "requirements": "mcp\n",
+                "manifest": {
+                    "version": "2.0.0",
+                    "tools": [{"name": "lookup", "description": "Lookup records"}],
+                    "env": {"API_TOKEN": {"secret": True}},
+                },
                 "env_vars": {"MAX_RESULTS": "10"},
                 "auto_start": False,
             },
@@ -310,9 +315,12 @@ class TestSingleFileServerCreation:
         body = resp.json()["data"]
         assert body["server"]["name"] == "editor-srv"
         assert body["server"]["description"] == "Created from editor"
-        assert body["server"]["env_vars"] == {"MAX_RESULTS": "10"}
+        assert body["server"]["env_vars"] == {"API_TOKEN": "", "MAX_RESULTS": "10"}
+        assert body["server"]["manifest_tools"][0]["name"] == "lookup"
         assert body["server"]["auto_start"] is False
+        assert body["manifest"]["version"] == "2.0.0"
         assert body["manifest"]["entrypoint"] == "main.py"
+        assert body["manifest"]["name"] == "editor-srv"
         assert (
             (tmp_path / "editor-srv" / "main.py").read_text(encoding="utf-8")
             == "def main():\n    pass\n"
@@ -321,6 +329,11 @@ class TestSingleFileServerCreation:
             (tmp_path / "editor-srv" / "requirements.txt").read_text(encoding="utf-8")
             == "mcp\n"
         )
+        manifest_on_disk = json.loads(
+            (tmp_path / "editor-srv" / "manifest.json").read_text(encoding="utf-8")
+        )
+        assert manifest_on_disk["name"] == "editor-srv"
+        assert manifest_on_disk["tools"][0]["name"] == "lookup"
 
         cfg.get_settings.cache_clear()
 
