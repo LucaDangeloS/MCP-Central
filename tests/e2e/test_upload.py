@@ -452,6 +452,127 @@ class TestUploadValidation:
         assert resp.status_code == 422
         assert "package.json" in resp.json()["detail"]
 
+    async def test_command_args_without_entrypoint_accepted(
+        self, client: AsyncClient, auth_headers: dict[str, str], tmp_path
+    ) -> None:
+        """command+args fully specifying the run makes entrypoint optional."""
+        import os
+
+        import hub.config as cfg
+
+        os.environ["SERVERS_DIR"] = str(tmp_path)
+        cfg.get_settings.cache_clear()
+
+        data = _make_zip(
+            manifest={
+                "name": "fireflyiii-mcp",
+                "version": "1.0.0",
+                "description": "Firefly III MCP",
+                "command": "node",
+                "args": ["dist/index.js", "--preset", "default", "--read-only"],
+                "node_version": ">=18",
+                "env": {
+                    "FIREFLY_III_ACCESS_TOKEN": {"required": True, "secret": True},
+                    "FIREFLY_III_BASE_URL": {"required": True, "secret": False},
+                },
+            },
+            include_requirements=False,
+            include_entrypoint=False,
+            extra_files={"dist/index.js": "// pre-built\n"},
+        )
+        resp = await client.post(
+            "/api/v1/upload",
+            files={"file": ("server.zip", data, "application/zip")},
+            headers=auth_headers,
+        )
+
+        assert resp.status_code == 201
+        server = resp.json()["data"]["server"]
+        assert server["language"] == "javascript"
+        assert server["launch_command"] == "node"
+        assert server["launch_args"] == ["dist/index.js", "--preset", "default", "--read-only"]
+        assert server["entrypoint_module"] == "dist/index.js"
+        assert server["env_vars"] == {"FIREFLY_III_ACCESS_TOKEN": "", "FIREFLY_III_BASE_URL": ""}
+
+        cfg.get_settings.cache_clear()
+
+    async def test_command_args_with_flags_and_explicit_entrypoint(
+        self, client: AsyncClient, auth_headers: dict[str, str], tmp_path
+    ) -> None:
+        """command+args works when entrypoint is also explicitly provided."""
+        import os
+
+        import hub.config as cfg
+
+        os.environ["SERVERS_DIR"] = str(tmp_path)
+        cfg.get_settings.cache_clear()
+
+        data = _make_zip(
+            manifest={
+                "name": "node-with-flags",
+                "version": "1.0.0",
+                "entrypoint": "dist/index.js",
+                "command": "node",
+                "args": ["dist/index.js", "--read-only"],
+            },
+            include_requirements=False,
+            include_entrypoint=False,
+            extra_files={"dist/index.js": "// server\n"},
+        )
+        resp = await client.post(
+            "/api/v1/upload",
+            files={"file": ("server.zip", data, "application/zip")},
+            headers=auth_headers,
+        )
+
+        assert resp.status_code == 201
+        server = resp.json()["data"]["server"]
+        assert server["launch_command"] == "node"
+        assert server["launch_args"] == ["dist/index.js", "--read-only"]
+        assert server["language"] == "javascript"
+
+        cfg.get_settings.cache_clear()
+
+    async def test_command_without_args_still_requires_entrypoint(
+        self, client: AsyncClient, auth_headers: dict[str, str]
+    ) -> None:
+        """command alone (empty args) does not satisfy the entrypoint requirement."""
+        data = _make_zip(
+            manifest={
+                "name": "bad-srv",
+                "version": "1.0.0",
+                "command": "node",
+                "args": [],
+            },
+            include_requirements=False,
+            include_entrypoint=False,
+        )
+        resp = await client.post(
+            "/api/v1/upload",
+            files={"file": ("server.zip", data, "application/zip")},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 422
+
+    async def test_command_with_shell_metacharacters_rejected(
+        self, client: AsyncClient, auth_headers: dict[str, str]
+    ) -> None:
+        data = _make_zip(
+            manifest={
+                "name": "bad-cmd-srv",
+                "version": "1.0.0",
+                "entrypoint": "main.py",
+                "command": "node; rm -rf /",
+                "args": ["index.js"],
+            },
+        )
+        resp = await client.post(
+            "/api/v1/upload",
+            files={"file": ("server.zip", data, "application/zip")},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 422
+
     async def test_javascript_upload_accepts_github_download_zip_layout(
         self, client: AsyncClient, auth_headers: dict[str, str], tmp_path
     ) -> None:

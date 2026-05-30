@@ -35,13 +35,15 @@ DbDep = Annotated[AsyncSession, Depends(get_db)]
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,62}[a-z0-9]$")
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-REQUIRED_MANIFEST_FIELDS = {"name", "version", "entrypoint"}
+REQUIRED_MANIFEST_FIELDS = {"name", "version"}
 ALLOWED_MANIFEST_FIELDS = {
     "name", "version", "description", "entrypoint", "module",
     "python_version", "node_version", "language", "command", "args",
     "env", "capabilities", "tags", "tools",
 }
-ALLOWED_LAUNCH_COMMANDS = {"node", "npm", "npx"}
+# Regex for safe executable names: letters, digits, dots, underscores, hyphens, forward slashes.
+# Shell metacharacters are explicitly excluded; the process is never launched with shell=True.
+_SAFE_COMMAND_RE = re.compile(r"^[a-zA-Z0-9._/-]+$")
 
 
 class SingleFileServerCreate(BaseModel):
@@ -62,16 +64,31 @@ class SingleFileServerCreate(BaseModel):
         return value
 
 
+def _has_custom_run(manifest: dict[str, Any]) -> bool:
+    """True when 'command' + non-empty 'args' together specify the full run command."""
+    command = manifest.get("command")
+    args = manifest.get("args")
+    return bool(command) and isinstance(args, list) and len(args) > 0
+
+
 def _validate_manifest(manifest: dict[str, Any]) -> list[str]:
     """Return a list of validation error strings (empty = valid)."""
     errors: list[str] = []
 
-    missing = REQUIRED_MANIFEST_FIELDS - manifest.keys()
-    if missing:
-        errors.append(f"manifest.json is missing required fields: {sorted(missing)}")
+    for field in REQUIRED_MANIFEST_FIELDS:
+        if field not in manifest:
+            errors.append(f"manifest.json is missing required field: '{field}'")
+
+    # 'entrypoint' is optional when 'command' + non-empty 'args' fully specify the run command.
+    if "entrypoint" not in manifest and not _has_custom_run(manifest):
+        errors.append(
+            "manifest.json is missing required field: 'entrypoint'. "
+            "Either set 'entrypoint', or set both 'command' and 'args' "
+            "(with args[0] as the script path to run)."
+        )
 
     name = manifest.get("name", "")
-    if not _NAME_RE.match(str(name)):
+    if name and not _NAME_RE.match(str(name)):
         errors.append(
             f"Server name '{name}' is invalid. "
             f"Must match /^[a-z0-9][a-z0-9_-]{{1,62}}[a-z0-9]$/"
@@ -83,8 +100,13 @@ def _validate_manifest(manifest: dict[str, Any]) -> list[str]:
 
     command = manifest.get("command")
     if command is not None:
-        if command not in ALLOWED_LAUNCH_COMMANDS:
-            errors.append("manifest.json field 'command' must be one of: node, npm, npx")
+        if not isinstance(command, str) or not command.strip():
+            errors.append("manifest.json field 'command' must be a non-empty string")
+        elif not _SAFE_COMMAND_RE.match(command):
+            errors.append(
+                "manifest.json field 'command' contains invalid characters. "
+                "Use only letters, digits, '.', '_', '-', '/'."
+            )
         args = manifest.get("args", [])
         if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
             errors.append("manifest.json field 'args' must be an array of strings")
@@ -138,13 +160,24 @@ def _env_defaults_from_manifest(manifest: dict[str, Any]) -> dict[str, str]:
     return dict.fromkeys(env_spec, "")
 
 
+def _script_path(manifest: dict[str, Any]) -> str:
+    """Return the script path from 'entrypoint', falling back to args[0] when absent."""
+    ep = manifest.get("entrypoint", "") or ""
+    if ep:
+        return str(ep)
+    args = manifest.get("args", [])
+    if isinstance(args, list) and args:
+        return str(args[0])
+    return ""
+
+
 def _detect_language(manifest: dict[str, Any], names_in_zip: list[str]) -> ServerLanguage:
     explicit = manifest.get("language")
     if explicit in {item.value for item in ServerLanguage}:
         return ServerLanguage(explicit)
 
-    entrypoint = str(manifest.get("entrypoint", ""))
-    suffix = Path(entrypoint).suffix.lower()
+    script = _script_path(manifest)
+    suffix = Path(script).suffix.lower()
     if suffix in {".js", ".mjs", ".cjs"}:
         return ServerLanguage.javascript
     if suffix in {".ts", ".mts", ".cts"}:
@@ -155,10 +188,12 @@ def _detect_language(manifest: dict[str, Any], names_in_zip: list[str]) -> Serve
 
 
 def _entrypoint_module(manifest: dict[str, Any], language: ServerLanguage) -> str:
-    entrypoint = str(manifest["entrypoint"])
+    script = _script_path(manifest)
+    if not script:
+        return "main"
     if language == ServerLanguage.python:
-        return str(manifest.get("module", entrypoint.removesuffix(".py").replace("/", ".")))
-    return entrypoint
+        return str(manifest.get("module", script.removesuffix(".py").replace("/", ".")))
+    return script
 
 
 def _launch_command(manifest: dict[str, Any]) -> tuple[str, list[str]]:
@@ -323,17 +358,19 @@ async def upload_server(
         raise HTTPException(status_code=422, detail={"errors": validation_errors})
 
     server_name: str = manifest["name"]
-    entrypoint_file: str = manifest["entrypoint"]
+    launch_command, launch_args = _launch_command(manifest)
+    entrypoint_file: str = manifest.get("entrypoint", "") or ""
+    if not entrypoint_file and launch_args:
+        entrypoint_file = launch_args[0]
     language = _detect_language(manifest, names_in_zip)
     module_name = _entrypoint_module(manifest, language)
-    launch_command, launch_args = _launch_command(manifest)
     description: str = manifest.get("description", "")
     manifest_tools = _manifest_tools(manifest)
 
     # ------------------------------------------------------------------ #
     # Step 3 — check entrypoint and dependency metadata exist in ZIP        #
     # ------------------------------------------------------------------ #
-    if entrypoint_file not in names_in_zip:
+    if entrypoint_file and entrypoint_file not in names_in_zip:
         raise HTTPException(
             status_code=422,
             detail=(
@@ -492,15 +529,17 @@ async def upload_codebase_server(
         raise HTTPException(status_code=422, detail={"errors": validation_errors})
 
     server_name: str = manifest["name"]
-    entrypoint_file: str = manifest["entrypoint"]
+    launch_command, launch_args = _launch_command(manifest)
+    entrypoint_file: str = manifest.get("entrypoint", "") or ""
+    if not entrypoint_file and launch_args:
+        entrypoint_file = launch_args[0]
     language = _detect_language(manifest, names_in_zip)
     module_name = _entrypoint_module(manifest, language)
-    launch_command, launch_args = _launch_command(manifest)
     description: str = manifest.get("description", "")
     manifest_tools = _manifest_tools(manifest)
     target_dir = settings.servers_dir / server_name
 
-    if entrypoint_file not in names_in_zip:
+    if entrypoint_file and entrypoint_file not in names_in_zip:
         raise HTTPException(
             status_code=422,
             detail=(

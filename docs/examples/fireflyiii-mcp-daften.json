@@ -1,0 +1,22 @@
+{
+  "name": "fireflyiii-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for Firefly III (daften/fireflyiii-mcp). Launched with a pre-built dist — no npm install required.",
+  "command": "node",
+  "args": ["dist/index.js", "--preset", "default"],
+  "node_version": ">=18.0.0",
+  "env": {
+    "FIREFLY_III_ACCESS_TOKEN": {
+      "description": "Personal access token from Firefly III (Profile > OAuth > Personal Access Tokens).",
+      "required": true,
+      "secret": true
+    },
+    "FIREFLY_III_BASE_URL": {
+      "description": "Base URL of your Firefly III instance, e.g. https://firefly.example.com (no trailing slash).",
+      "required": true,
+      "secret": false
+    }
+  },
+  "capabilities": ["tools"],
+  "tags": ["finance", "firefly-iii", "javascript"]
+}

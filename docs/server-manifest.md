@@ -90,13 +90,13 @@ server.zip
 | `name` | string | YES | Server identifier. Must match `/^[a-z0-9][a-z0-9_-]{1,62}[a-z0-9]$/` |
 | `version` | string | YES | Semantic version string (e.g. `"1.0.0"`) |
 | `description` | string | NO | Human-readable description shown in the UI |
-| `entrypoint` | string | YES | Path to the entrypoint file within the ZIP (e.g. `"main.py"`) |
-| `language` | string | NO | Runtime language. One of `"python"`, `"javascript"`, or `"typescript"`. If omitted, the hub detects it automatically. |
+| `entrypoint` | string | YES* | Path to the entrypoint file within the ZIP (e.g. `"main.py"`). *Can be omitted when `command` + `args` are both provided — the hub derives the script path from `args[0]`. |
+| `language` | string | NO | Runtime language. One of `"python"`, `"javascript"`, or `"typescript"`. If omitted, the hub detects it automatically from the entrypoint/`args[0]` extension or the presence of `package.json`. |
 | `module` | string | NO | Python module path to import (e.g. `"main"` or `"mypackage.server"`). Defaults to the entrypoint filename without `.py`. Ignored for JS/TS. |
 | `python_version` | string | NO | PEP 440 version specifier for the Python interpreter (e.g. `">=3.10"`) |
 | `node_version` | string | NO | Informational Node version constraint for JavaScript/TypeScript packages (e.g. `">=18"`) |
-| `command` | string | NO | Optional explicit launcher for JS/TS packages. Must be one of `"node"`, `"npm"`, or `"npx"`. If omitted, JS runs `node <entrypoint>` and TS runs `npx --no-install tsx <entrypoint>`. |
-| `args` | array | NO | Optional argv array used with `command`. Never executed through a shell. |
+| `command` | string | NO | Executable used to launch the server (e.g. `"node"`, `"npx"`, `"npm"`, `"python"`, `"uvx"`). Any safe name is accepted — only shell metacharacters are rejected. The process is always spawned without `shell=True`. When set together with a non-empty `args`, the `entrypoint` field may be omitted. |
+| `args` | array | NO | Argument list passed to `command`. May include the script path, flags, and any positional parameters (e.g. `["dist/index.js", "--preset", "default", "--read-only"]`). Never executed through a shell. |
 | `env` | object | NO | Environment variables the server needs. The hub seeds one editable field per key in the server's UI form on upload; operators fill values in there. Values are stored per-server on `McpServer.env_vars` and injected into the subprocess at start/restart. **Note:** values are currently persisted in cleartext in SQLite (see AGENTS.md §13 KI-1). |
 | `capabilities` | array | NO | Informational: `"tools"`, `"resources"`, `"prompts"` |
 | `tags` | array | NO | Freeform tags for UI filtering |
@@ -132,10 +132,10 @@ maintenance. Stop the server before refreshing its codebase.
 
 JavaScript packages run with `node <entrypoint>` by default. TypeScript packages run with
 `npx --no-install tsx <entrypoint>`, so include `tsx` in `package.json` when uploading `.ts`
-entrypoints. If a package needs a different npm/npx launcher, set `command` and `args` in
-`manifest.json`; the hub still launches it as an argv list without `shell=True`.
+entrypoints. If a package needs a different launcher or extra flags, set `command` and `args` in
+`manifest.json`; the hub always spawns it as an argv list without `shell=True`.
 
-Example JavaScript manifest:
+Example JavaScript manifest (standard, entrypoint auto-detected):
 
 ```json
 {
@@ -151,6 +151,44 @@ Example JavaScript manifest:
   }
 }
 ```
+
+#### Custom run command with flags
+
+Use `command` + `args` to specify the exact command line, including flags. When both are present
+and `args` is non-empty, `entrypoint` may be omitted — the hub derives the script path from
+`args[0]` for language detection. This is the right pattern for pre-built servers (no
+`package.json` needed) and for servers that require extra flags at startup.
+
+```json
+{
+  "name": "my-server-readonly",
+  "version": "1.0.0",
+  "description": "Node MCP server launched with custom flags",
+  "command": "node",
+  "args": ["dist/index.js", "--preset", "default", "--read-only"],
+  "node_version": ">=18",
+  "env": {
+    "API_URL": {
+      "description": "Upstream API base URL",
+      "required": true,
+      "secret": false
+    },
+    "API_TOKEN": {
+      "description": "API access token",
+      "required": true,
+      "secret": true
+    }
+  },
+  "capabilities": ["tools"],
+  "tags": ["example"]
+}
+```
+
+This produces the subprocess command: `node dist/index.js --preset default --read-only`.
+The `args` array is passed directly — no shell interpolation occurs.
+
+See `docs/examples/fireflyiii-mcp-daften.json` for a ready-made manifest for the
+`daften/fireflyiii-mcp` server using this pattern.
 
 For the Firefly III MCP server from `fabianonetto/mcp-server-firefly-iii`, use the ready-made
 manifest in `docs/examples/firefly-iii-manifest.json`. That manifest targets GitHub's
