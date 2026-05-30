@@ -637,9 +637,14 @@ function ServerTools({ server, onUpdated }: { server: Server; onUpdated: () => v
         <Wrench size={14} className="text-zinc-500 dark:text-zinc-400" aria-hidden="true" />
         <span className="text-xs font-medium text-zinc-700 dark:text-zinc-300">Tools</span>
         {!loadingTools && tools.length > 0 && (
-          <span className="text-[10px] text-zinc-400 dark:text-zinc-600 ml-1">
-            {tools.length - server.disabled_tools.length} / {tools.length} enabled
-          </span>
+          <>
+            <span className="text-[10px] text-zinc-400 dark:text-zinc-600 ml-1">
+              {tools.length - server.disabled_tools.length} / {tools.length} enabled
+            </span>
+            <span className="text-[10px] font-medium px-1.5 py-px rounded bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-300 border border-blue-100 dark:border-blue-900/60 ml-auto">
+              {tools.reduce((sum, t) => sum + (t.call_count ?? 0), 0)} total calls
+            </span>
+          </>
         )}
       </div>
 
