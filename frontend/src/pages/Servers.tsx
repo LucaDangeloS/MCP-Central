@@ -193,34 +193,7 @@ export default function Servers() {
               </button>
 
               {expanded === server.id && (
-                <div className="px-5 pb-5 border-t border-zinc-200 dark:border-zinc-800 space-y-3 text-sm pt-4">
-                  <Detail label="Entrypoint" value={server.entrypoint_module} />
-                  <Detail label="Auto-start" value={server.auto_start ? 'Yes' : 'No'} />
-                  <Detail label="Restart on error" value={server.restart_on_error ? 'Yes' : 'No'} />
-                  <Detail label="Restart count" value={String(server.restart_count)} />
-                  <Detail label="Registered" value={formatDate(server.created_at)} />
-
-                  <ServerLiveLogs serverName={server.name} />
-
-                  <ServerTools server={server} onUpdated={load} />
-
-                  {server.last_error && (
-                    <div>
-                      <div className="flex items-center gap-1.5 text-red-600 dark:text-red-400 mb-1.5">
-                        <AlertTriangle size={13} aria-hidden="true" />
-                        <span className="text-xs font-medium">Last Error</span>
-                        {server.last_error_at && (
-                          <span className="text-zinc-400 dark:text-zinc-500 text-xs ml-auto">
-                            {formatDate(server.last_error_at)}
-                          </span>
-                        )}
-                      </div>
-                      <pre className="text-xs font-mono bg-red-50 border border-red-200 dark:bg-red-950/30 dark:border-red-900/50 rounded-md p-3 overflow-x-auto whitespace-pre-wrap text-red-700 dark:text-red-300 max-h-60">
-                        {server.last_error}
-                      </pre>
-                    </div>
-                  )}
-                </div>
+                <ExpandedServerCard server={server} onUpdated={load} />
               )}
             </Card>
           ))}
@@ -237,6 +210,50 @@ export default function Servers() {
             await load()
           }}
         />
+      )}
+    </div>
+  )
+}
+
+function ExpandedServerCard({
+  server,
+  onUpdated,
+}: {
+  server: Server
+  onUpdated: () => void
+}) {
+  const [totalCalls, setTotalCalls] = useState<number | null>(null)
+
+  return (
+    <div className="px-5 pb-5 border-t border-zinc-200 dark:border-zinc-800 space-y-3 text-sm pt-4">
+      <Detail label="Entrypoint" value={server.entrypoint_module} />
+      <Detail label="Auto-start" value={server.auto_start ? 'Yes' : 'No'} />
+      <Detail label="Restart on error" value={server.restart_on_error ? 'Yes' : 'No'} />
+      <Detail label="Restart count" value={String(server.restart_count)} />
+      {totalCalls !== null && (
+        <Detail label="Total MCP calls" value={String(totalCalls)} />
+      )}
+      <Detail label="Registered" value={formatDate(server.created_at)} />
+
+      <ServerLiveLogs serverName={server.name} />
+
+      <ServerTools server={server} onUpdated={onUpdated} onTotalCalls={setTotalCalls} />
+
+      {server.last_error && (
+        <div>
+          <div className="flex items-center gap-1.5 text-red-600 dark:text-red-400 mb-1.5">
+            <AlertTriangle size={13} aria-hidden="true" />
+            <span className="text-xs font-medium">Last Error</span>
+            {server.last_error_at && (
+              <span className="text-zinc-400 dark:text-zinc-500 text-xs ml-auto">
+                {formatDate(server.last_error_at)}
+              </span>
+            )}
+          </div>
+          <pre className="text-xs font-mono bg-red-50 border border-red-200 dark:bg-red-950/30 dark:border-red-900/50 rounded-md p-3 overflow-x-auto whitespace-pre-wrap text-red-700 dark:text-red-300 max-h-60">
+            {server.last_error}
+          </pre>
+        </div>
       )}
     </div>
   )
@@ -581,7 +598,15 @@ function ServerSettingsDialog({
 
 // ─── Server Tools panel ───────────────────────────────────────────────────────
 
-function ServerTools({ server, onUpdated }: { server: Server; onUpdated: () => void }) {
+function ServerTools({
+  server,
+  onUpdated,
+  onTotalCalls,
+}: {
+  server: Server
+  onUpdated: () => void
+  onTotalCalls?: (total: number) => void
+}) {
   const [tools, setTools] = useState<McpTool[]>([])
   const [loadingTools, setLoadingTools] = useState(false)
   const [togglingTool, setTogglingTool] = useState<string | null>(null)
@@ -594,7 +619,10 @@ function ServerTools({ server, onUpdated }: { server: Server; onUpdated: () => v
     setError(null)
     serversApi
       .tools(server.name)
-      .then((r) => setTools(r.data))
+      .then((r) => {
+        setTools(r.data)
+        onTotalCalls?.(r.data.reduce((sum, t) => sum + (t.call_count ?? 0), 0))
+      })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Failed to load tools'))
       .finally(() => setLoadingTools(false))
   }, [server.name, server.status])
@@ -637,14 +665,9 @@ function ServerTools({ server, onUpdated }: { server: Server; onUpdated: () => v
         <Wrench size={14} className="text-zinc-500 dark:text-zinc-400" aria-hidden="true" />
         <span className="text-xs font-medium text-zinc-700 dark:text-zinc-300">Tools</span>
         {!loadingTools && tools.length > 0 && (
-          <>
-            <span className="text-[10px] text-zinc-400 dark:text-zinc-600 ml-1">
-              {tools.length - server.disabled_tools.length} / {tools.length} enabled
-            </span>
-            <span className="text-[10px] font-medium px-1.5 py-px rounded bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-300 border border-blue-100 dark:border-blue-900/60 ml-auto">
-              {tools.reduce((sum, t) => sum + (t.call_count ?? 0), 0)} total calls
-            </span>
-          </>
+          <span className="text-[10px] text-zinc-400 dark:text-zinc-600 ml-1">
+            {tools.length - server.disabled_tools.length} / {tools.length} enabled
+          </span>
         )}
       </div>
 
